@@ -1,0 +1,79 @@
+{
+  "$schema": "../../schemas/preset.v1.schema.json",
+  "schemaVersion": 1,
+  "signatureVersion": 1,
+  "id": "workstation-throughput",
+  "name": "Workstation Throughput",
+  "version": "1.0.0",
+  "description": "For 32 GB+ creative and compilation workloads: stops telemetry collection, hands the media scheduler a larger share of the CPU, removes the network throttle that Windows applies to multimedia streams and keeps priority on the foreground application.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "moderate",
+  "tags": ["workstation", "rendering", "throughput"],
+  "requires": {
+    "os": { "minBuild": 19041 },
+    "elevation": true,
+    "restorePoint": "preferred"
+  },
+  "compatibility": {
+    "ramGb": { "min": 32 }
+  },
+  "profiles": [
+    {
+      "id": "base",
+      "name": "Scheduler and telemetry",
+      "actions": {
+        "registry": [
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+            "name": "SystemResponsiveness",
+            "type": "REG_DWORD",
+            "data": 10
+          },
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+            "name": "NetworkThrottlingIndex",
+            "type": "REG_DWORD",
+            "data": 4294967295
+          },
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects",
+            "name": "VisualFXSetting",
+            "type": "REG_DWORD",
+            "data": 2
+          }
+        ],
+        "services": [
+          { "name": "DiagTrack", "startup": "Disabled", "stop": true },
+          { "name": "SysMain", "startup": "Manual" }
+        ],
+        "power": {
+          "plan": "balanced",
+          "settings": [
+            { "setting": "processor-max-state", "value": 100 },
+            { "setting": "core-parking-min-cores", "value": 100 }
+          ]
+        }
+      }
+    },
+    {
+      "id": "editing-suite",
+      "name": "Editing suite addendum",
+      "description": "Only for machines with at least 12 GB of VRAM, where the timeline and effects pipeline can use it.",
+      "when": { "gpuVramGb": { "min": 12 } },
+      "extends": "base",
+      "actions": {
+        "priorities": [
+          { "process": "Adobe Premiere Pro.exe", "priority": "AboveNormal" },
+          { "process": "blender.exe", "priority": "AboveNormal" }
+        ]
+      }
+    }
+  ]
+}

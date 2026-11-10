@@ -1,0 +1,84 @@
+{
+  "$schema": "../../schemas/preset.v1.schema.json",
+  "schemaVersion": 1,
+  "signatureVersion": 1,
+  "id": "ultra-low-latency-aggressive",
+  "name": "Ultra-Low Latency (Aggressive)",
+  "version": "1.0.0",
+  "description": "Maximum single-machine responsiveness for competitive online play: MSI-X on the GPU and NICs, per-interface TCP acknowledgement tuning, Game DVR and error reporting silenced, telemetry services stopped, and the CPU held at full clock with parking and link-state savings off. Aggressive by design: it requires elevation and a restore point, and it warns on every machine-specific trade-off.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "aggressive",
+  "tags": ["gaming", "latency", "fps", "network"],
+  "requires": {
+    "os": { "minBuild": 19041 },
+    "elevation": true,
+    "restorePoint": "required"
+  },
+  "compatibility": {
+    "storage": ["SSD"],
+    "ramGb": { "min": 16 }
+  },
+  "profiles": [
+    {
+      "id": "base",
+      "name": "Aggressive latency baseline",
+      "description": "Interrupt, network, telemetry and power tuning for SSD machines with at least 16 GB of RAM.",
+      "actions": {
+        "registry": [
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "System\\GameConfigStore",
+            "name": "GameDVR_Enabled",
+            "type": "REG_DWORD",
+            "data": 0
+          },
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "SOFTWARE\\Microsoft\\GameBar",
+            "name": "UseNexusForGameBarEnabled",
+            "type": "REG_DWORD",
+            "data": 0
+          },
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting",
+            "name": "Disabled",
+            "type": "REG_DWORD",
+            "data": 1
+          },
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+            "name": "NetworkThrottlingIndex",
+            "type": "REG_DWORD",
+            "data": 4294967295
+          }
+        ],
+        "services": [
+          { "name": "DiagTrack", "startup": "Disabled", "stop": true },
+          { "name": "WerSvc", "startup": "Manual" }
+        ],
+        "power": {
+          "plan": "high-performance",
+          "settings": [
+            { "setting": "processor-min-state", "value": 100 },
+            { "setting": "processor-max-state", "value": 100 },
+            { "setting": "core-parking-min-cores", "value": 100 },
+            { "setting": "usb-selective-suspend", "value": 0 },
+            { "setting": "pcie-link-state", "value": 0 }
+          ]
+        },
+        "deviceInterrupts": [
+          { "deviceClass": "gpu" },
+          { "deviceClass": "network" }
+        ],
+        "network": [{ "tcpAckFrequency": 1, "tcpNoDelay": 1 }]
+      }
+    }
+  ]
+}

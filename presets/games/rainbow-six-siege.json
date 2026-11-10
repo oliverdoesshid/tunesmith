@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "rainbow-six-siege",
+  "name": "Rainbow Six Siege (FPS)",
+  "version": "1.0.0",
+  "description": "Frees the CPU for Siege: the game is pinned to performance cores with High priority and the high-performance GPU, the global timer is held at 0.5 ms for the session, and background browsers drop to Idle so a Discord call or stream tab cannot steal frames mid-round.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "moderate",
+  "trigger": { "exe": "RainbowSix.exe" },
+  "actions": {
+    "affinity": { "strategy": "performance-cores" },
+    "priority": "High",
+    "gpuPreference": "high-performance",
+    "timerHold": true,
+    "backgroundRules": [
+      { "process": "chrome.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "msedge.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "firefox.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "opera.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "brave.exe", "action": "lower-priority", "priority": "Idle" }
+    ]
+  },
+  "notes": [
+    "Voice chat is untouched: Discord and Ubisoft Connect are not listed, so calls and the game overlay keep working.",
+    "Nothing is suspended, only deprioritised; tabs, downloads and music resume instantly when the round ends.",
+    "If you run the Vulkan build, duplicate this file and change the trigger exe to RainbowSix_Vulkan.exe.",
+    "On a CPU without efficiency cores the affinity plan falls back to every logical processor; the rest still applies.",
+    "Biggest FPS wins are still in-game: Vulkan API, resolution scale at 100, and shadows/Lumen-equivalent effects down."
+  ]
+}

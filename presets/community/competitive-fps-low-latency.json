@@ -1,0 +1,104 @@
+{
+  "$schema": "../../schemas/preset.v1.schema.json",
+  "schemaVersion": 1,
+  "signatureVersion": 1,
+  "id": "competitive-fps-low-latency",
+  "name": "Competitive FPS — Low Latency",
+  "version": "1.0.0",
+  "description": "Removes background game recording, disables mouse acceleration and keeps the CPU, PCIe link and USB devices out of low-power states. Targets high-refresh competitive shooters where frame pacing matters more than idle power.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "moderate",
+  "tags": ["gaming", "latency", "fps"],
+  "requires": {
+    "os": { "minBuild": 19041 },
+    "elevation": true,
+    "restorePoint": "preferred"
+  },
+  "compatibility": {
+    "storage": ["SSD"],
+    "ramGb": { "min": 16 }
+  },
+  "profiles": [
+    {
+      "id": "base",
+      "name": "Baseline latency tuning",
+      "description": "Applies to any machine with a solid-state system drive and at least 16 GB of RAM.",
+      "actions": {
+        "registry": [
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "System\\GameConfigStore",
+            "name": "GameDVR_Enabled",
+            "type": "REG_DWORD",
+            "data": 0
+          },
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "SOFTWARE\\Microsoft\\GameBar",
+            "name": "UseNexusForGameBarEnabled",
+            "type": "REG_DWORD",
+            "data": 0
+          },
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "Control Panel\\Mouse",
+            "name": "MouseSpeed",
+            "type": "REG_SZ",
+            "data": "0"
+          },
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "Control Panel\\Mouse",
+            "name": "MouseThreshold1",
+            "type": "REG_SZ",
+            "data": "0"
+          },
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "Control Panel\\Mouse",
+            "name": "MouseThreshold2",
+            "type": "REG_SZ",
+            "data": "0"
+          }
+        ],
+        "power": {
+          "plan": "high-performance",
+          "settings": [
+            { "setting": "processor-min-state", "value": 100 },
+            { "setting": "usb-selective-suspend", "value": 0 },
+            { "setting": "pcie-link-state", "value": 0 }
+          ]
+        }
+      }
+    },
+    {
+      "id": "high-refresh",
+      "name": "High-refresh addendum",
+      "description": "Only applied on machines with at least 8 GB of VRAM and 8 hardware threads.",
+      "when": {
+        "gpuVramGb": { "min": 8 },
+        "cpuThreads": { "min": 8 }
+      },
+      "extends": "base",
+      "actions": {
+        "registry": [
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "System\\GameConfigStore",
+            "name": "GameDVR_HonorUserFSEBehaviorMode",
+            "type": "REG_DWORD",
+            "data": 1
+          }
+        ],
+        "priorities": [{ "process": "cs2.exe", "priority": "High" }]
+      }
+    }
+  ]
+}

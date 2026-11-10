@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tunesmith.dev/schemas/preset.v1.schema.json",
+  "title": "TuneSmith community preset",
+  "description": "Editor-support mirror of the runtime validator. The authoritative validator is src/shared/preset/schema.ts (zod); this file exists so authors get completion and inline errors. It is intentionally a close, but not bit-identical, projection of the zod schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "signatureVersion",
+    "id",
+    "name",
+    "version",
+    "description",
+    "authors",
+    "license",
+    "risk",
+    "tags",
+    "compatibility",
+    "profiles"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "maxLength": 300 },
+    "schemaVersion": { "const": 1 },
+    "signatureVersion": { "const": 1 },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,63}$",
+      "description": "Lowercase kebab-case, 3-64 characters."
+    },
+    "name": { "type": "string", "minLength": 3, "maxLength": 80 },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]{1,32})?$" },
+    "description": { "type": "string", "minLength": 10, "maxLength": 2000 },
+    "authors": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["handle"],
+        "properties": {
+          "handle": { "type": "string", "minLength": 1, "maxLength": 64 },
+          "url": { "type": "string", "maxLength": 300 }
+        }
+      }
+    },
+    "license": { "type": "string", "minLength": 1, "maxLength": 40 },
+    "homepage": { "type": "string", "maxLength": 300 },
+    "risk": { "enum": ["conservative", "moderate", "aggressive"] },
+    "tags": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "type": "string", "pattern": "^[a-z0-9-]{1,24}$" }
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "os": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "minBuild": { "type": "integer", "minimum": 10240 },
+            "maxBuild": { "type": "integer", "minimum": 10240 }
+          }
+        },
+        "elevation": { "type": "boolean" },
+        "restorePoint": { "enum": ["required", "preferred", "none"] },
+        "minAppVersion": { "type": "string" }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "An omitted dimension is a wildcard. A specified dimension that does not match makes the preset inapplicable.",
+      "properties": {
+        "signature": {
+          "type": "array",
+          "maxItems": 24,
+          "items": { "$ref": "#/$defs/token" }
+        },
+        "cpu": { "type": "array", "maxItems": 24, "items": { "$ref": "#/$defs/token" } },
+        "gpu": { "type": "array", "maxItems": 24, "items": { "$ref": "#/$defs/token" } },
+        "ramGb": { "$ref": "#/$defs/range" },
+        "storage": {
+          "type": "array",
+          "maxItems": 3,
+          "items": { "enum": ["SSD", "HDD", "UNKNOWN"] }
+        }
+      }
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/profile" }
+    }
+  },
+  "$defs": {
+    "token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._*-]{0,63}$",
+      "description": "Hardware token; a single `*` wildcard is allowed."
+    },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min": { "type": "integer", "minimum": 0, "maximum": 4096 },
+        "max": { "type": "integer", "minimum": 0, "maximum": 4096 }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "actions"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 400 },
+        "when": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cpu": { "type": "array", "maxItems": 24, "items": { "$ref": "#/$defs/token" } },
+            "gpu": { "type": "array", "maxItems": 24, "items": { "$ref": "#/$defs/token" } },
+            "ramGb": { "$ref": "#/$defs/range" },
+            "storage": { "type": "array", "maxItems": 3, "items": { "enum": ["SSD", "HDD", "UNKNOWN"] } },
+            "gpuVramGb": { "$ref": "#/$defs/range" },
+            "cpuThreads": { "$ref": "#/$defs/range" }
+          }
+        },
+        "extends": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" },
+        "actions": { "$ref": "#/$defs/actions" }
+      }
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "registry": {
+          "type": "array",
+          "maxItems": 60,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["op", "hive", "path", "name"],
+            "properties": {
+              "op": { "enum": ["set", "delete"] },
+              "hive": { "enum": ["HKCU", "HKLM"] },
+              "path": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 220,
+                "pattern": "^[A-Za-z0-9_\\\\{}()., -]+$",
+                "description": "Relative to the hive. No relative segments, no leading or trailing backslash."
+              },
+              "name": { "type": "string", "pattern": "^[A-Za-z0-9_.(), -]{1,64}$" },
+              "type": { "enum": ["REG_SZ", "REG_EXPAND_SZ", "REG_DWORD", "REG_QWORD"] },
+              "data": {
+                "oneOf": [
+                  { "type": "integer", "minimum": 0 },
+                  { "type": "string", "maxLength": 1024 }
+                ]
+              }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "op": { "const": "set" } }, "required": ["op"] },
+                "then": { "required": ["type", "data"] }
+              }
+            ]
+          }
+        },
+        "services": {
+          "type": "array",
+          "maxItems": 40,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" },
+              "startup": { "enum": ["Automatic", "Manual", "Disabled"] },
+              "delayedStart": { "type": "boolean" },
+              "stop": { "type": "boolean" }
+            }
+          }
+        },
+        "priorities": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["process", "priority"],
+            "properties": {
+              "process": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]{0,95}\\.exe$",
+                "description": "Bare image name. Paths are rejected."
+              },
+              "priority": { "enum": ["Idle", "BelowNormal", "Normal", "AboveNormal", "High"] }
+            }
+          }
+        },
+        "power": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "plan": { "enum": ["balanced", "high-performance", "power-saver"] },
+            "settings": {
+              "type": "array",
+              "maxItems": 12,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["setting", "value"],
+                "properties": {
+                  "setting": {
+                    "enum": [
+                      "processor-min-state",
+                      "processor-max-state",
+                      "core-parking-min-cores",
+                      "usb-selective-suspend",
+                      "pcie-link-state",
+                      "disk-idle-timeout"
+                    ]
+                  },
+                  "value": { "type": "integer", "minimum": 0, "maximum": 86400 }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

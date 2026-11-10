@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "esports-low-latency",
+  "name": "Competitive Esports (CS2)",
+  "version": "1.0.0",
+  "description": "Low-latency profile for a competitive shooter: the game is pinned to performance cores, given High priority and the high-performance GPU, while background browsers drop to Idle instead of being suspended so nothing is lost mid-match.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "moderate",
+  "trigger": { "exe": "cs2.exe" },
+  "actions": {
+    "affinity": { "strategy": "performance-cores" },
+    "priority": "High",
+    "gpuPreference": "high-performance",
+    "timerHold": true,
+    "backgroundRules": [
+      { "process": "chrome.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "msedge.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "firefox.exe", "action": "lower-priority", "priority": "Idle" }
+    ]
+  },
+  "notes": [
+    "On a CPU without efficiency cores the affinity plan falls back to every logical processor; the rest of the profile still applies.",
+    "Priorities are only lowered, never raised, so nothing is suspended while a match is in progress."
+  ]
+}

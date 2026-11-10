@@ -1,0 +1,37 @@
+{
+  "$schema": "../../schemas/preset.v1.schema.json",
+  "schemaVersion": 1,
+  "signatureVersion": 1,
+  "id": "hdd-latency-relief",
+  "name": "HDD Latency Relief",
+  "version": "1.0.0",
+  "description": "Conservative tuning for machines still booting from a spinning disk: keeps Superfetch and prefetching enabled, stops the drive from spinning down, and avoids the aggressive caching settings that help SSDs but hurt seek-bound hardware.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "conservative",
+  "tags": ["storage", "hdd", "stability"],
+  "requires": {
+    "os": { "minBuild": 19041 },
+    "elevation": true,
+    "restorePoint": "preferred"
+  },
+  "compatibility": {
+    "storage": ["HDD"]
+  },
+  "profiles": [
+    {
+      "id": "base",
+      "name": "Keep the disk warm",
+      "actions": {
+        "services": [{ "name": "SysMain", "startup": "Automatic" }],
+        "power": {
+          "plan": "balanced",
+          "settings": [
+            { "setting": "disk-idle-timeout", "value": 0 },
+            { "setting": "processor-min-state", "value": 5 }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "elden-ring-eco",
+  "name": "Elden Ring — Eco Balance",
+  "version": "1.0.0",
+  "description": "Keeps a CPU-heavy open-world game smooth by parking browsers and music in Windows 11 Efficiency Mode instead of suspending them: they keep running, but the scheduler treats them as expendable until the game exits.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "moderate",
+  "trigger": { "exe": "eldenring.exe" },
+  "actions": {
+    "affinity": { "strategy": "physical-cores" },
+    "priority": "AboveNormal",
+    "gpuPreference": "high-performance",
+    "backgroundRules": [
+      { "process": "chrome.exe", "action": "eco-mode" },
+      { "process": "msedge.exe", "action": "eco-mode" },
+      { "process": "Spotify.exe", "action": "eco-mode" }
+    ]
+  },
+  "notes": [
+    "Efficiency Mode needs Windows 11. On Windows 10 the throttling calls report failure and the rest of the profile still applies.",
+    "Unlike suspension, Efficiency Mode never pauses downloads, voice chat or playback — it only deprioritises them.",
+    "The optimizer, the shell, audio and security processes are excluded automatically and cannot be listed as targets."
+  ]
+}

@@ -1,0 +1,93 @@
+/**
+ * The context bridge.
+ *
+ * Runs with `sandbox: true` and `contextIsolation: true`, so it can reach `ipcRenderer`
+ * but not Node, the filesystem, or the main process objects. It exposes exactly the
+ * methods in `TuneSmithApi` and nothing else: no generic `invoke(channel, ...)` escape
+ * hatch, which would hand the renderer the whole privileged IPC surface.
+ */
+import { contextBridge, ipcRenderer } from 'electron';
+import { EVENT_CHANNELS, IPC_CHANNELS } from '../shared/channels';
+import type { ElevationResult, IpcEnvelope, PresetSummary, TuneSmithApi } from '../shared/ipc';
+import type { CompiledPlan } from '../shared/preset/compiler';
+import type {
+  AppInfo,
+  ApplyOutcome,
+  EngineProgress,
+  PreflightReport,
+  RollbackReport,
+  SessionSummary,
+} from '../shared/session';
+import type { HardwareSpec } from '../shared/types';
+import type { GameProfileSummary, GameStatus } from '../shared/game/types';
+
+async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
+  const response = (await ipcRenderer.invoke(channel, ...args)) as IpcEnvelope<T> | undefined;
+
+  if (response === undefined || typeof response !== 'object') {
+    throw new Error(`Malformed IPC response on ${channel}`);
+  }
+  if (!response.ok) {
+    const error = new Error(response.error.message) as Error & { code?: string };
+    error.code = response.error.code;
+    throw error;
+  }
+  return response.value;
+}
+
+const api: TuneSmithApi = {
+  bridgeVersion: 1,
+  mock: false,
+
+  app: {
+    info: () => invoke<AppInfo>(IPC_CHANNELS.appInfo),
+    requestElevation: () => invoke<ElevationResult>(IPC_CHANNELS.appElevation),
+  },
+
+  hardware: {
+    get: (forceRefresh = false) => invoke<HardwareSpec>(IPC_CHANNELS.hardwareGet, forceRefresh),
+  },
+
+  presets: {
+    list: () => invoke<PresetSummary[]>(IPC_CHANNELS.presetsList),
+    plan: (presetId: string) => invoke<CompiledPlan>(IPC_CHANNELS.presetsPlan, { presetId }),
+    openFolder: () => invoke<void>(IPC_CHANNELS.presetsOpenFolder),
+  },
+
+  safety: {
+    preflight: () => invoke<PreflightReport>(IPC_CHANNELS.safetyPreflight),
+  },
+
+  engine: {
+    apply: (request) => invoke<ApplyOutcome>(IPC_CHANNELS.engineApply, request),
+    sessions: () => invoke<SessionSummary[]>(IPC_CHANNELS.engineSessions),
+    rollback: (sessionId: string) => invoke<RollbackReport>(IPC_CHANNELS.engineRollback, { sessionId }),
+    restoreDefaults: () => invoke<RollbackReport[]>(IPC_CHANNELS.engineRestoreDefaults),
+  },
+
+  game: {
+    status: () => invoke<GameStatus>(IPC_CHANNELS.gameStatus),
+    setWatching: (enabled: boolean) => invoke<GameStatus>(IPC_CHANNELS.gameSetWatching, { enabled }),
+    profiles: () => invoke<GameProfileSummary[]>(IPC_CHANNELS.gameProfiles),
+    stop: () => invoke<GameStatus>(IPC_CHANNELS.gameStop),
+    onStatus: (listener: (status: GameStatus) => void) => {
+      const handler = (_event: unknown, payload: GameStatus): void => listener(payload);
+      ipcRenderer.on(EVENT_CHANNELS.gameStatus, handler);
+      return () => {
+        ipcRenderer.removeListener(EVENT_CHANNELS.gameStatus, handler);
+      };
+    },
+  },
+
+  events: {
+    onProgress: (listener: (progress: EngineProgress) => void) => {
+      const handler = (_event: unknown, payload: EngineProgress): void => listener(payload);
+      ipcRenderer.on(EVENT_CHANNELS.progress, handler);
+      return () => {
+        ipcRenderer.removeListener(EVENT_CHANNELS.progress, handler);
+      };
+    },
+  },
+};
+
+contextBridge.exposeInMainWorld('tunesmith', api);

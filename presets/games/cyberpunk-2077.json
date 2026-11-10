@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "cyberpunk-2077",
+  "name": "Cyberpunk 2077",
+  "version": "1.0.0",
+  "description": "Frame-time consistency for a CPU-heavy open-world game: one thread per physical core so SMT siblings do not fight the main thread, High priority, the discrete GPU preference forced for this executable, and browsers moved out of the way while it runs.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "aggressive",
+  "trigger": { "exe": "Cyberpunk2077.exe" },
+  "actions": {
+    "affinity": { "strategy": "physical-cores" },
+    "priority": "High",
+    "gpuPreference": "high-performance",
+    "flushStandbyMemory": false,
+    "backgroundRules": [
+      { "process": "chrome.exe", "action": "suspend" },
+      { "process": "msedge.exe", "action": "suspend" },
+      { "process": "OneDrive.exe", "action": "lower-priority", "priority": "BelowNormal" },
+      { "process": "Discord.exe", "action": "lower-priority", "priority": "BelowNormal" }
+    ]
+  },
+  "notes": [
+    "Suspending a browser keeps its tabs alive on disk and resumes them on exit, but downloads and video calls in that browser stop while the game runs.",
+    "Physical-cores-only leaves the SMT siblings free for the audio, render and streaming threads.",
+    "Standby-list purging is deliberately off: it discards cached file pages and usually increases load time."
+  ]
+}

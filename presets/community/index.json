@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "scripts/hash-presets.mjs",
+  "presets": [
+    {
+      "file": "competitive-fps-low-latency.json",
+      "id": "competitive-fps-low-latency",
+      "version": "1.0.0",
+      "sha256": "520615a8d9a84596143af25df7118125aee930bfa219b9cba2352844a1ea8980"
+    },
+    {
+      "file": "hdd-latency-relief.json",
+      "id": "hdd-latency-relief",
+      "version": "1.0.0",
+      "sha256": "57438c8f157014ea04ef81416b25976f5392c96ab107646ffa581ee57a74f168"
+    },
+    {
+      "file": "ultra-low-latency-aggressive.json",
+      "id": "ultra-low-latency-aggressive",
+      "version": "1.0.0",
+      "sha256": "2925486184ffd8af353d95362fea18cb1e4fc6d5adc8ad0c7a8f1f4e2344941f"
+    },
+    {
+      "file": "workstation-throughput.json",
+      "id": "workstation-throughput",
+      "version": "1.0.0",
+      "sha256": "24c10008fbce56a54e43c4de4104374572cc8aaaed1b6c13cafe08e47b2f0790"
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "name": "tunesmith",
+  "productName": "TuneSmith",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows performance tuning driven by community presets, with a closed action vocabulary and mandatory rollback.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/main/index.cjs",
+  "bin": {
+    "tunesmith-cli": "dist/cli/index.cjs"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:ui": "vite",
+    "build": "node scripts/build.mjs",
+    "cli": "node dist/cli/index.cjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "detect": "node scripts/detect.mjs",
+    "presets:hash": "node scripts/hash-presets.mjs",
+    "package": "npm run build && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^5.9.0",
+    "vite": "^8.3.6",
+    "vitest": "^5.1.0"
+  },
+  "build": {
+    "appId": "dev.tunesmith.app",
+    "productName": "TuneSmith",
+    "files": [
+      "dist/**/*",
+      "presets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
