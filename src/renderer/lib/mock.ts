@@ -22,6 +22,7 @@ import { describeActions } from '../../shared/game/describe';
 import { evaluateGameProfile } from '../../shared/game/policy';
 import { gameProfileSchema } from '../../shared/game/schema';
 import type { GameProfile, GameProfileSummary, GameStatus } from '../../shared/game/types';
+import type { MarketStatus } from '../../shared/market/types';
 
 import cyberpunkGame from '../../../presets/games/cyberpunk-2077.json';
 import esportsGame from '../../../presets/games/esports-low-latency.json';
@@ -136,6 +137,22 @@ export function createMockBridge(): TuneSmithApi {
   let sessions: SessionSummary[] = [];
 
   const gameListeners = new Set<(status: GameStatus) => void>();
+  let marketStatus: MarketStatus = {
+    configured: false,
+    source: null,
+    fetchedAt: null,
+    error: null,
+    rejected: [],
+    entries: [],
+    telemetry: {
+      consent: false,
+      pending: 0,
+      uploadConfigured: false,
+      lastUploadAt: null,
+      lastUploadError: null,
+    },
+  };
+
   let gameStatus: GameStatus = {
     watching: false,
     phase: 'idle',
@@ -153,6 +170,8 @@ export function createMockBridge(): TuneSmithApi {
       higherEfficiencyIsFaster: true,
     },
     packages: [],
+    telemetry: null,
+    guard: null,
     profiles: gameProfiles.length,
     pollMs: 2000,
   };
@@ -243,6 +262,17 @@ export function createMockBridge(): TuneSmithApi {
       list: async () => presets.map((p) => summarize(p, MOCK_SPEC)),
       plan: async (presetId: string) => compile(presetId),
       openFolder: async () => undefined,
+    },
+
+    market: {
+      status: async () => marketStatus,
+      install: async () => {
+        throw new Error('The marketplace is unavailable in the browser preview.');
+      },
+      setConsent: async (consent: boolean) => {
+        marketStatus = { ...marketStatus, telemetry: { ...marketStatus.telemetry, consent } };
+        return marketStatus;
+      },
     },
 
     safety: {

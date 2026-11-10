@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { formatZodIssues, PRESET_LIMITS, presetSchema, type FormattedIssue, type Preset } from './schema';
 import { evaluatePresetPolicy, type PolicyFinding } from './policy';
 
-export type TrustLevel = 'bundled-verified' | 'unverified';
+export type TrustLevel = 'bundled-verified' | 'market-verified' | 'unverified';
 
 export type PresetFailureCode = 'read' | 'parse' | 'schema' | 'integrity' | 'duplicate' | 'too-large';
 
@@ -89,6 +89,8 @@ export async function loadPresetFile(
   absPath: string,
   entry: PresetIndexEntry | null,
   indexPresent: boolean,
+  /** Index written by the marketplace installer (signature checked at install time). */
+  marketIndex = false,
 ): Promise<FileLoadResult> {
   const file = path.basename(absPath);
 
@@ -148,7 +150,7 @@ export async function loadPresetFile(
       preset: result.preset,
       file,
       sha256: digest,
-      trust: entry !== null ? 'bundled-verified' : 'unverified',
+      trust: entry !== null ? (marketIndex ? 'market-verified' : 'bundled-verified') : 'unverified',
       findings: evaluatePresetPolicy(result.preset),
     },
     failure: null,
@@ -185,7 +187,12 @@ export async function loadPresetDirectory(dir: string): Promise<LoadResult> {
   const seen = new Map<string, string>();
   for (const file of files) {
     const entry = index?.presets.find((p) => p.file === file) ?? null;
-    const { preset, failure } = await loadPresetFile(path.join(dir, file), entry, index !== null);
+    const { preset, failure } = await loadPresetFile(
+      path.join(dir, file),
+      entry,
+      index !== null,
+      index?.generatedBy === 'tunesmith-marketplace',
+    );
     if (failure) {
       failures.push(failure);
       continue;

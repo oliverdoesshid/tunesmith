@@ -14,12 +14,16 @@ import {
   EVENT_CHANNELS,
   gameWatchingRequest,
   IPC_CHANNELS,
+  marketInstallRequest,
+  marketStatusRequest,
   presetIdRequest,
   sessionIdRequest,
+  telemetryConsentRequest,
   type ElevationResult,
   type IpcEnvelope,
   type PresetSummary,
 } from '../shared/ipc';
+import type { InstallResult, MarketStatus } from '../shared/market/types';
 import { describeActions } from '../shared/game/describe';
 import type { GameProfileSummary, GameStatus } from '../shared/game/types';
 import { compilePlan } from '../shared/preset/compiler';
@@ -130,6 +134,24 @@ export function registerIpcHandlers(state: AppState, getWindow: () => BrowserWin
     if (error.length > 0) throw new TuneSmithError('unavailable', `Could not open the preset folder: ${error}`);
   });
 
+  handle<MarketStatus>(IPC_CHANNELS.marketStatus, async (raw) => {
+    const parsed =
+      raw === undefined
+        ? { refresh: false }
+        : parsePayload<{ refresh?: boolean }>(marketStatusRequest, raw);
+    return state.market.status(parsed.refresh === true);
+  });
+
+  handle<InstallResult>(IPC_CHANNELS.marketInstall, async (raw) => {
+    const { presetId } = parsePayload<{ presetId: string }>(marketInstallRequest, raw);
+    return state.market.install(presetId);
+  });
+
+  handle<MarketStatus>(IPC_CHANNELS.marketTelemetryConsent, async (raw) => {
+    const { consent } = parsePayload<{ consent: boolean }>(telemetryConsentRequest, raw);
+    return state.market.setConsent(consent);
+  });
+
   handle(IPC_CHANNELS.safetyPreflight, async () =>
     runPreflight({
       journal: state.journal,
@@ -167,17 +189,31 @@ export function registerIpcHandlers(state: AppState, getWindow: () => BrowserWin
       getWindow()?.webContents.send(EVENT_CHANNELS.progress, progress);
     };
 
-    return state.executor.apply(plan, {
+    const outcome = await state.executor.apply(plan, {
       acknowledgeConsent: request.acknowledgeConsent,
       acknowledgeRisk: request.acknowledgeRisk,
     });
+
+    // Local-only by default; an upload happens only when the user has opted in.
+    void state.market.recordEvent(
+      plan.presetId,
+      plan.presetVersion,
+      outcome.status === 'applied' ? 'apply-ok' : 'apply-failed',
+    );
+
+    return outcome;
   });
 
   handle(IPC_CHANNELS.engineSessions, async () => state.journal.summaries());
 
   handle(IPC_CHANNELS.engineRollback, async (raw) => {
     const { sessionId } = parsePayload<{ sessionId: string }>(sessionIdRequest, raw);
-    return state.executor.rollback(sessionId);
+    const before = (await state.journal.summaries()).find((summary) => summary.id === sessionId);
+    const report = await state.executor.rollback(sessionId);
+    if (report.ok && before?.interrupted === true) {
+      void state.market.recordEvent(before.presetId, before.presetVersion, 'session-recovered');
+    }
+    return report;
   });
 
   handle(IPC_CHANNELS.engineRestoreDefaults, async () => state.executor.restoreDefaults());

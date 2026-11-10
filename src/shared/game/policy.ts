@@ -186,6 +186,23 @@ export function evaluateGameProfile(profile: GameProfile, topology: CpuTopology 
     });
   }
 
+  if (profile.guards?.maxCpuTempC !== undefined && profile.guards.maxCpuTempC < 75) {
+    findings.push({
+      severity: 'warn',
+      code: 'game.guard-tight',
+      target: profile.id,
+      message: `A ${profile.guards.maxCpuTempC}°C CPU guard is tight enough to trip under normal gaming load; expect the profile to release often.`,
+    });
+  }
+  if (profile.guards?.maxGpuTempC !== undefined && profile.guards.maxGpuTempC < 70) {
+    findings.push({
+      severity: 'warn',
+      code: 'game.guard-tight-gpu',
+      target: profile.id,
+      message: `A ${profile.guards.maxGpuTempC}°C GPU guard is likely to trip on any sustained load.`,
+    });
+  }
+
   const rules = profile.actions.backgroundRules ?? [];
   const suspends = rules.filter((rule) => rule.action === 'suspend');
 

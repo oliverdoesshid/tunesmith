@@ -268,6 +268,152 @@ $rows = @([TsCpuSet]::Read() | ForEach-Object {
  * Placeholders: `PID`, `MASKS` (comma-separated UInt64), `GROUPS` (comma-separated int),
  * and `PRIORITY_LINE`.
  */
+/**
+ * One read-only hardware telemetry sample, from every source Windows exposes without
+ * third-party drivers of our own.
+ *
+ * The script returns *candidates*, not a decision. `normaliseTelemetry` in TS picks the
+ * best available source, so the preference order is unit-tested instead of living in
+ * PowerShell. What each source covers:
+ *
+ *   - AC/battery: `GetSystemPowerStatus`, with `Win32_Battery` as a fallback when the
+ *     C# compile is unavailable. Present on desktops (AC, no battery) and laptops alike.
+ *   - LibreHardwareMonitor / OpenHardwareMonitor: when either is already running, its WMI
+ *     namespace exposes true package temperatures, GPU temperatures for NVIDIA, AMD and
+ *     Intel, and real power draw. Read-only; absence is normal and not an error.
+ *   - ACPI thermal zones and the thermal-zone perf counter: present on most laptops, many
+ *     desktops expose no zone at all. These are chassis/zone readings, not a package sensor.
+ *   - `nvidia-smi`: NVIDIA only, including the legacy NVSMI install path.
+ *   - Battery discharge rate: laptops on battery only.
+ */
+export const TELEMETRY_SCRIPT = String.raw`
+$onAc = $null
+$batteryPercent = $null
+try {
+  Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class TsPowerStatus {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct SYSTEM_POWER_STATUS {
+    public byte ACLineStatus;
+    public byte BatteryFlag;
+    public byte BatteryLifePercent;
+    public byte SystemStatusFlag;
+    public int BatteryLifeTime;
+    public int BatteryFullLifeTime;
+  }
+  [DllImport("kernel32.dll", SetLastError = true)]
+  public static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS status);
+}
+"@ | Out-Null
+  $status = New-Object TsPowerStatus+SYSTEM_POWER_STATUS
+  if ([TsPowerStatus]::GetSystemPowerStatus([ref]$status)) {
+    if ($status.ACLineStatus -eq 1) { $onAc = $true }
+    elseif ($status.ACLineStatus -eq 0) { $onAc = $false }
+    if ($status.BatteryLifePercent -le 100) { $batteryPercent = [int]$status.BatteryLifePercent }
+  }
+} catch { }
+
+# Fallback where Add-Type is unavailable: Win32_Battery still separates AC from discharging.
+if ($null -eq $onAc) {
+  try {
+    $batteryInfo = Get-CimInstance -ClassName Win32_Battery -ErrorAction Stop | Select-Object -First 1
+    if ($null -ne $batteryInfo) {
+      if ($batteryInfo.BatteryStatus -eq 1) { $onAc = $false }
+      elseif ($batteryInfo.BatteryStatus -eq 2) { $onAc = $true }
+      if ($batteryInfo.EstimatedChargeRemaining -ge 0) { $batteryPercent = [int]$batteryInfo.EstimatedChargeRemaining }
+    }
+  } catch { }
+}
+
+function Get-MonitorSnapshot([string]$namespace) {
+  try {
+    $sensors = @(Get-CimInstance -Namespace $namespace -ClassName Sensor -ErrorAction Stop)
+  } catch { return $null }
+  if ($sensors.Count -eq 0) { return $null }
+
+  $cpuTemps = @($sensors | Where-Object { $_.SensorType -eq 'Temperature' -and [double]$_.Value -gt 0 -and [string]$_.Identifier -match '/(intelcpu|amdcpu|cpu)/' })
+  $gpuTemps = @($sensors | Where-Object { $_.SensorType -eq 'Temperature' -and [double]$_.Value -gt 0 -and [string]$_.Identifier -match '/gpu' })
+  $cpuPower = @($sensors | Where-Object { $_.SensorType -eq 'Power' -and [double]$_.Value -gt 0 -and [string]$_.Identifier -match '/(intelcpu|amdcpu|cpu)/' })
+  $gpuPower = @($sensors | Where-Object { $_.SensorType -eq 'Power' -and [double]$_.Value -gt 0 -and [string]$_.Identifier -match '/gpu' })
+
+  $cpuTempC = $null
+  $preferred = @($cpuTemps | Where-Object { [string]$_.Name -match 'Package|Tctl' })
+  if ($preferred.Count -eq 0) { $preferred = $cpuTemps }
+  if ($preferred.Count -gt 0) { $cpuTempC = ($preferred | ForEach-Object { [double]$_.Value } | Measure-Object -Maximum).Maximum }
+
+  $gpuTempC = $null
+  $preferred = @($gpuTemps | Where-Object { [string]$_.Name -eq 'GPU Core' })
+  if ($preferred.Count -eq 0) { $preferred = $gpuTemps }
+  if ($preferred.Count -gt 0) { $gpuTempC = ($preferred | ForEach-Object { [double]$_.Value } | Measure-Object -Maximum).Maximum }
+
+  $powerDrawW = $null
+  $preferred = @($cpuPower | Where-Object { [string]$_.Name -match 'Package' })
+  if ($preferred.Count -eq 0) { $preferred = $cpuPower }
+  if ($preferred.Count -eq 0) { $preferred = $gpuPower }
+  if ($preferred.Count -gt 0) { $powerDrawW = ($preferred | ForEach-Object { [double]$_.Value } | Measure-Object -Maximum).Maximum }
+
+  return [pscustomobject]@{ cpuTempC = $cpuTempC; gpuTempC = $gpuTempC; powerDrawW = $powerDrawW }
+}
+
+$acpiCpuTempC = $null
+try {
+  $zones = @(Get-CimInstance -Namespace 'root/wmi' -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction Stop)
+  $readings = @($zones | ForEach-Object { [double]$_.CurrentTemperature } | Where-Object { $_ -gt 0 })
+  if ($readings.Count -gt 0) {
+    $acpiCpuTempC = [math]::Round((($readings | Measure-Object -Maximum).Maximum / 10.0) - 273.15, 1)
+  }
+} catch { }
+
+$counterCpuTempC = $null
+try {
+  $rows = @(Get-CimInstance -ClassName Win32_PerfFormattedData_Counters_ThermalZoneInformation -ErrorAction Stop)
+  $readings = @($rows | ForEach-Object { [double]$_.HighPrecisionTemperature } | Where-Object { $_ -gt 0 })
+  if ($readings.Count -gt 0) {
+    $counterCpuTempC = [math]::Round((($readings | Measure-Object -Maximum).Maximum / 10.0) - 273.15, 1)
+  }
+} catch { }
+
+$nvidiaGpuTempC = $null
+try {
+  $candidates = @(
+    (Get-Command nvidia-smi -ErrorAction SilentlyContinue).Source,
+    (Join-Path $env:ProgramFiles 'NVIDIA Corporation\NVSMI\nvidia-smi.exe'),
+    (Join-Path $env:SystemRoot 'System32\nvidia-smi.exe')
+  ) | Where-Object { $_ -and (Test-Path $_) }
+  foreach ($tool in $candidates) {
+    $value = @(& $tool --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>$null) | Select-Object -First 1
+    $parsed = 0.0
+    if ([double]::TryParse([string]$value, [ref]$parsed) -and $parsed -gt 0) {
+      $nvidiaGpuTempC = [math]::Round($parsed, 1)
+      break
+    }
+  }
+} catch { }
+
+$batteryPowerW = $null
+if ($onAc -eq $false) {
+  try {
+    $battery = Get-CimInstance -Namespace 'root/wmi' -ClassName BatteryStatus -ErrorAction Stop | Select-Object -First 1
+    if ($null -ne $battery -and $battery.DischargeRate -gt 0) {
+      $batteryPowerW = [math]::Round($battery.DischargeRate / 1000.0, 1)
+    }
+  } catch { }
+}
+
+[pscustomobject]@{
+  onAc             = $onAc
+  batteryPercent   = $batteryPercent
+  lhm              = (Get-MonitorSnapshot 'root/LibreHardwareMonitor')
+  ohm              = (Get-MonitorSnapshot 'root/OpenHardwareMonitor')
+  acpiCpuTempC     = $acpiCpuTempC
+  counterCpuTempC  = $counterCpuTempC
+  nvidiaGpuTempC   = $nvidiaGpuTempC
+  batteryPowerW    = $batteryPowerW
+} | ConvertTo-Json -Compress -Depth 6
+`;
+
 export const GROUP_AFFINITY_SCRIPT = String.raw`
 Add-Type -TypeDefinition @"
 using System;

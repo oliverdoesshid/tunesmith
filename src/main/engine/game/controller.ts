@@ -20,8 +20,12 @@
  */
 import { computeAffinityMask, isUsableMask, maskToHex } from '../../../shared/game/affinity';
 import { selectProfile, type RunningProcess } from '../../../shared/game/matcher';
-import { evaluateGameProfile, isBlocked, watchList, type GameFinding } from '../../../shared/game/policy';import type { AppliedAdjustment,
+import { evaluateGameProfile, isBlocked, watchList, type GameFinding } from '../../../shared/game/policy';
+import { evaluateGuards, GUARD_DEFAULTS } from '../../../shared/game/telemetry';
+import type { AppliedAdjustment,
   GamePackageInfo,
+  GuardOutcome,
+  TelemetrySample,
   CpuTopology,
   GamePriority,
   GameProfile,
@@ -62,6 +66,8 @@ export interface GameAdapter {
   restoreGpuPreference(exePath: string, previous: string | null): Promise<void>;
   /** Optional so adapters without Store support keep working; absence only skips resolution. */
   resolvePackage?(familyName: string): Promise<GamePackageInfo | null>;
+  /** Optional hardware telemetry. When absent, guards are reported as unenforced. */
+  readTelemetry?(): Promise<TelemetrySample>;
 }
 
 /** The controller only starts, stops and replaces a watcher; tests provide a stub. */
@@ -87,6 +93,8 @@ export interface GameControllerDeps {
   sessions: SessionStore;
   pollMs?: number;
   now?: () => string;
+  /** Millisecond clock for telemetry cadence and guard cooldowns; injectable for tests. */
+  nowMs?: () => number;
   log?: (line: string) => void;
   onChange?: (status: GameStatus) => void;
   createWatcher?: (options: WatcherOptions) => WatcherHandle;
@@ -132,7 +140,16 @@ export class GameController {
   private lastError: string | null = null;
   private lastFindings: GameFinding[] = [];
 
+  private telemetry: TelemetrySample | null = null;
+  private guardOutcome: GuardOutcome | null = null;
+  private lastTelemetryAt = 0;
+  private guardCooldownUntil = 0;
+  private readonly guardNoted = new Set<string>();
+  private readonly clock: () => number;
+
   private suppressedFor: string | null = null;
+  /** When the current suppression ends; Infinity for a policy-blocked profile. */
+  private suppressionExpiresAt = Number.POSITIVE_INFINITY;
   private missingTicks = 0;
   private queue: Promise<void> = Promise.resolve();
   private started = false;
@@ -143,6 +160,7 @@ export class GameController {
     this.sessions = deps.sessions;
     this.pollMs = clampPollMs(deps.pollMs ?? 2_000);
     this.now = deps.now ?? isoNow;
+    this.clock = deps.nowMs ?? (() => Date.now());
     this.log = deps.log ?? (() => {});
     this.onChange = deps.onChange ?? (() => {});
     this.createWatcher =
@@ -271,9 +289,16 @@ export class GameController {
     const profile = selectProfile(this.profiles, foreground);
     if (profile === null) {
       this.suppressedFor = null;
+      this.suppressionExpiresAt = Number.POSITIVE_INFINITY;
       return;
     }
-    if (this.suppressedFor === foreground.exe.toLowerCase()) return;
+    if (this.guardCooldownUntil > this.clock()) return;
+    if (this.suppressedFor === foreground.exe.toLowerCase()) {
+      if (this.clock() < this.suppressionExpiresAt) return;
+      // A thermal cool-down has elapsed: the profile may be tried again.
+      this.suppressedFor = null;
+      this.suppressionExpiresAt = Number.POSITIVE_INFINITY;
+    }
 
     await this.activate(profile, foreground, snapshot);
   }
@@ -281,6 +306,10 @@ export class GameController {
   private async checkActive(snapshot: GameSnapshot): Promise<void> {
     const session = this.active;
     if (session === null) return;
+
+    await this.checkThermalGuards(session);
+    if (this.active === null) return;
+
     if (session.pid === null) {
       await this.restoreActive('no tracked process');
       return;
@@ -310,6 +339,7 @@ export class GameController {
 
     if (isBlocked(findings)) {
       this.suppressedFor = process.exe.toLowerCase();
+      this.suppressionExpiresAt = Number.POSITIVE_INFINITY;
       this.phase = 'error';
       this.lastError = findings
         .filter((finding) => finding.severity === 'block')
@@ -318,6 +348,22 @@ export class GameController {
       this.log(`refused profile ${profile.id}: ${this.lastError}`);
       this.emit();
       return;
+    }
+
+    // Refuse to start aggressive tuning onto a machine that is already over its limit.
+    if (profile.guards !== undefined) {
+      const outcome = await this.sampleGuards(profile);
+      this.lastTelemetryAt = this.clock();
+      if (outcome !== null && outcome.status === 'trip') {
+        this.guardCooldownUntil = this.clock() + (profile.guards.cooldownSeconds ?? GUARD_DEFAULTS.cooldownSeconds) * 1000;
+        this.suppressedFor = process.exe.toLowerCase();
+        this.suppressionExpiresAt = this.guardCooldownUntil;
+        this.phase = 'error';
+        this.lastError = `Refused to tune while a thermal guard is tripped — ${outcome.message}`;
+        this.log(this.lastError);
+        this.emit();
+        return;
+      }
     }
 
     const session: StoredGameSession = {
@@ -354,6 +400,92 @@ export class GameController {
 
   private emit(): void {
     this.onChange(this.status());
+  }
+
+  /**
+   * Read telemetry and evaluate the active profile's guards.
+   *
+   * Runs on its own cadence (`sampleSeconds`), not on the watcher tick: a WMI query every
+   * two seconds is wasteful, and a guard does not need sub-second reaction time.
+   */
+  private async checkThermalGuards(session: StoredGameSession): Promise<void> {
+    const profile = this.profiles.find((candidate) => candidate.id === session.profileId);
+    if (profile?.guards === undefined) return;
+
+    const intervalMs = (profile.guards.sampleSeconds ?? GUARD_DEFAULTS.sampleSeconds) * 1000;
+    if (this.clock() - this.lastTelemetryAt < intervalMs) return;
+    this.lastTelemetryAt = this.clock();
+
+    const outcome = await this.sampleGuards(profile);
+    if (outcome === null) return;
+
+    if (outcome.status === 'trip') {
+      this.record(session, {
+        kind: 'thermal-guard',
+        target: outcome.reason.kind,
+        detail: outcome.message,
+        ok: false,
+        error: outcome.message,
+      });
+      this.guardCooldownUntil =
+        this.clock() + (profile.guards.cooldownSeconds ?? GUARD_DEFAULTS.cooldownSeconds) * 1000;
+      this.suppressedFor = session.exe.toLowerCase();
+      this.suppressionExpiresAt = this.guardCooldownUntil;
+      await this.restoreActive(`thermal guard: ${outcome.message}`);
+      this.lastError = `Tuning released by a thermal guard — ${outcome.message}`;
+      this.emit();
+      return;
+    }
+
+    // Unenforced inputs are reported once, not on every sample.
+    const note =
+      outcome.status === 'unavailable'
+        ? { detail: 'Guard not enforced', error: outcome.message }
+        : outcome.missing.length > 0
+          ? { detail: 'Partly enforced', error: `Unavailable: ${outcome.missing.join(', ')}.` }
+          : null;
+    if (note === null) return;
+
+    const key = `${session.id}:unavailable`;
+    if (this.guardNoted.has(key)) return;
+    this.guardNoted.add(key);
+    session.adjustments.push({
+      kind: 'thermal-guard',
+      target: 'telemetry',
+      detail: note.detail,
+      ok: false,
+      error: note.error,
+    });
+    await this.sessions.save(session);
+    this.emit();
+  }
+
+  private async sampleGuards(profile: GameProfile): Promise<GuardOutcome | null> {
+    const guards = profile.guards;
+    if (guards === undefined) return null;
+
+    if (this.adapter.readTelemetry === undefined) {
+      this.guardOutcome = {
+        status: 'unavailable',
+        missing: ['telemetry provider'],
+        message: 'This build has no hardware telemetry provider, so guards cannot be enforced.',
+      };
+      return this.guardOutcome;
+    }
+
+    try {
+      const sample = await this.adapter.readTelemetry();
+      this.telemetry = sample;
+      this.guardOutcome = evaluateGuards(guards, sample);
+      return this.guardOutcome;
+    } catch (error) {
+      this.guardOutcome = {
+        status: 'unavailable',
+        missing: ['telemetry'],
+        message: `Hardware telemetry could not be read: ${describeError(error)}`,
+      };
+      return this.guardOutcome;
+    }
   }
 
   private record(session: StoredGameSession, adjustment: AppliedAdjustment): void {
@@ -802,6 +934,8 @@ export class GameController {
       lastError: this.lastError ?? this.profilingError,
       topology: this.topology,
       packages: [...this.packageInfo.values()],
+      telemetry: this.telemetry,
+      guard: this.guardOutcome,
       profiles: this.profiles.length,
       pollMs: this.pollMs,
     };

@@ -4,9 +4,11 @@ import type { CompiledPlan } from '../shared/preset/compiler';
 import type { AppInfo, EngineProgress, PreflightReport, SessionSummary } from '../shared/session';
 import type { HardwareSpec } from '../shared/types';
 import type { GameProfileSummary, GameStatus } from '../shared/game/types';
+import type { MarketStatus } from '../shared/market/types';
 import { Header } from './components/Chrome';
 import { GameModePanel } from './components/GameModePanel';
 import { HardwarePanel, SafetyBanner } from './components/HardwarePanel';
+import { MarketplacePanel } from './components/MarketplacePanel';
 import { PlanDialog } from './components/PlanDialog';
 import { PresetBrowser } from './components/PresetBrowser';
 import { SessionPanel, summarizeReports } from './components/SessionPanel';
@@ -25,6 +27,7 @@ export default function App(): ReactNode {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [game, setGame] = useState<GameStatus | null>(null);
   const [gameProfiles, setGameProfiles] = useState<GameProfileSummary[]>([]);
+  const [market, setMarket] = useState<MarketStatus | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -33,18 +36,20 @@ export default function App(): ReactNode {
   const [progress, setProgress] = useState<EngineProgress | null>(null);
 
   const reload = useCallback(async () => {
-    const [presetList, sessionList, report, gameStatus, profiles] = await Promise.all([
+    const [presetList, sessionList, report, gameStatus, profiles, marketStatus] = await Promise.all([
       bridge.presets.list(),
       bridge.engine.sessions(),
       bridge.safety.preflight(),
       bridge.game.status(),
       bridge.game.profiles(),
+      bridge.market.status(),
     ]);
     setPresets(presetList);
     setSessions(sessionList);
     setPreflight(report);
     setGame(gameStatus);
     setGameProfiles(profiles);
+    setMarket(marketStatus);
   }, [bridge]);
 
   useEffect(() => {
@@ -168,6 +173,36 @@ export default function App(): ReactNode {
     }
   }, [bridge]);
 
+  const installMarketPreset = useCallback(
+    async (presetId: string) => {
+      setBusy(true);
+      try {
+        const result = await bridge.market.install(presetId);
+        setToast({
+          kind: 'ok',
+          text: `${result.presetId} v${result.version} installed after signature verification.`,
+        });
+        await reload();
+      } catch (err) {
+        setToast({ kind: 'error', text: errorMessage(err) });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [bridge, reload],
+  );
+
+  const setTelemetryConsent = useCallback(
+    async (consent: boolean) => {
+      try {
+        setMarket(await bridge.market.setConsent(consent));
+      } catch (err) {
+        setToast({ kind: 'error', text: errorMessage(err) });
+      }
+    },
+    [bridge],
+  );
+
   const requestElevation = useCallback(async () => {
     try {
       const result = await bridge.app.requestElevation();
@@ -230,6 +265,13 @@ export default function App(): ReactNode {
                 onPreview={(id) => void openPreview(id)}
                 onApply={(id) => void openPreview(id)}
                 onOpenFolder={() => void bridge.presets.openFolder()}
+              />
+              <MarketplacePanel
+                status={market}
+                busy={busy}
+                onRefresh={() => void bridge.market.status(true).then(setMarket)}
+                onInstall={(id) => void installMarketPreset(id)}
+                onConsent={(consent) => void setTelemetryConsent(consent)}
               />
               <GameModePanel
                 status={game}

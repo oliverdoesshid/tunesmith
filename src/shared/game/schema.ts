@@ -41,6 +41,25 @@ const backgroundRuleSchema = z.strictObject({
   priority: z.enum(['Idle', 'BelowNormal']).optional(),
 });
 
+const guardsSchema = z
+  .strictObject({
+    maxCpuTempC: z.number().int().min(60).max(105).optional(),
+    maxGpuTempC: z.number().int().min(60).max(105).optional(),
+    onBattery: z.enum(['restore', 'ignore']).optional(),
+    cooldownSeconds: z.number().int().min(30).max(900).optional(),
+    sampleSeconds: z.number().int().min(5).max(60).optional(),
+  })
+  .superRefine((guards, ctx) => {
+    const hasThreshold = guards.maxCpuTempC !== undefined || guards.maxGpuTempC !== undefined;
+    if (!hasThreshold && guards.onBattery !== 'restore') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['maxCpuTempC'],
+        message: 'A guard needs a temperature limit, onBattery: "restore", or both.',
+      });
+    }
+  });
+
 const actionsSchema = z.strictObject({
   affinity: affinitySchema.optional(),
   priority: z.enum(['Normal', 'AboveNormal', 'High']).optional(),
@@ -98,6 +117,7 @@ export const gameProfileSchema = z
     risk: z.enum(['conservative', 'moderate', 'aggressive']),
     trigger: triggerSchema,
     actions: actionsSchema,
+    guards: guardsSchema.optional(),
     notes: z.array(z.string().min(4).max(240)).max(GAME_LIMITS.maxNotes).optional(),
   })
   .superRefine((profile, ctx) => {

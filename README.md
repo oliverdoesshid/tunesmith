@@ -101,6 +101,9 @@ docs/                   ARCHITECTURE · SECURITY-MODEL · PRESET-AUTHORING · GA
    value it changes to disk *before* acting, restores on exit, recovers after a crash, and
    defers application quit until the restore completes. The shell, compositor, audio engine,
    logon and Defender are never suspended.
+9. **Thermal guards release, then wait.** A game profile may set CPU/GPU temperature limits
+   and an AC-only rule. A trip restores every change, and the profile is not re-applied until
+   a cool-down elapses. Sensors are read-only and reported honestly when unavailable.
 
 The registry policy also hard-blocks persistence and boot keys (`Run*` including WOW6432Node,
 `Winlogon`, `IFEO`, `Session Manager`, `Services`, `Class`, `CI`, `DeviceGuard`) and protected
@@ -111,6 +114,16 @@ services (Defender, firewall, update, audio, RPC, Event Log, SCM/WMI).
 - **Game mode has not been run against a real game.** Detection, policy, activation, restore
   and crash recovery are unit-tested; the first real session is still a supervised test. See
   `docs/GAME-ENGINE.md` §9.
+- **Thermal guards depend on what the machine exposes.** With LibreHardwareMonitor or
+  OpenHardwareMonitor running, TuneSmith reads package temperatures, any-vendor GPU
+  temperatures and real power draw from it. Without one, CPU temperature falls back to ACPI
+  thermal zones (absent on many desktops) and GPU temperature to `nvidia-smi` (NVIDIA only).
+  When a sensor is missing the session records that the guard could not be enforced instead
+  of pretending it was.
+- **The marketplace ships without a catalog or key.** Verification, install and the
+  telemetry queue are implemented and tested, but a public endpoint and pinned Ed25519 key
+  are operator-supplied (see `docs/MARKETPLACE.md`). No key is bundled, so a stock build
+  shows a configuration hint instead of a catalog.
 - **Efficiency Mode needs Windows 11 and is untested live.** The `eco-mode` switch-on and
   switch-off paths are unit-tested, but no real game session has toggled them yet.
 - **Requirement-8 mutations are unit-tested, not run live.** MSI-X enablement, IRQ priority,

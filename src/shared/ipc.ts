@@ -14,6 +14,7 @@ import type { CompiledPlan, StepGroup } from './preset/compiler';
 import type { TrustLevel } from './preset/loader';
 import type { AppInfo, ApplyOutcome, EngineProgress, PreflightReport, RollbackReport, SessionSummary } from './session';
 import type { GameProfileSummary, GameStatus } from './game/types';
+import type { InstallResult, MarketStatus } from './market/types';
 
 // Re-exported so main-process code can import the contract from one place.
 export { EVENT_CHANNELS, IPC_CHANNELS };
@@ -42,6 +43,18 @@ export const sessionIdRequest = z.strictObject({
 
 export const gameWatchingRequest = z.strictObject({
   enabled: z.boolean(),
+});
+
+export const marketStatusRequest = z.strictObject({
+  refresh: z.boolean().optional(),
+});
+
+export const marketInstallRequest = z.strictObject({
+  presetId: z.string().regex(/^[a-z0-9][a-z0-9-]{2,63}$/),
+});
+
+export const telemetryConsentRequest = z.strictObject({
+  consent: z.boolean(),
 });
 
 export type ApplyRequest = z.infer<typeof applyRequestSchema>;
@@ -117,6 +130,12 @@ export interface TuneSmithApi {
     /** Restore the active game session now. */
     stop(): Promise<GameStatus>;
     onStatus(listener: (status: GameStatus) => void): () => void;
+  };
+  market: {
+    status(refresh?: boolean): Promise<MarketStatus>;
+    /** Install a catalog entry after its signature and digest have been verified. */
+    install(presetId: string): Promise<InstallResult>;
+    setConsent(consent: boolean): Promise<MarketStatus>;
   };
   events: {
     onProgress(listener: (progress: EngineProgress) => void): () => void;

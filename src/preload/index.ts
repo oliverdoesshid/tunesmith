@@ -20,6 +20,7 @@ import type {
 } from '../shared/session';
 import type { HardwareSpec } from '../shared/types';
 import type { GameProfileSummary, GameStatus } from '../shared/game/types';
+import type { InstallResult, MarketStatus } from '../shared/market/types';
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   const response = (await ipcRenderer.invoke(channel, ...args)) as IpcEnvelope<T> | undefined;
@@ -77,6 +78,12 @@ const api: TuneSmithApi = {
         ipcRenderer.removeListener(EVENT_CHANNELS.gameStatus, handler);
       };
     },
+  },
+
+  market: {
+    status: (refresh = false) => invoke<MarketStatus>(IPC_CHANNELS.marketStatus, { refresh }),
+    install: (presetId: string) => invoke<InstallResult>(IPC_CHANNELS.marketInstall, { presetId }),
+    setConsent: (consent: boolean) => invoke<MarketStatus>(IPC_CHANNELS.marketTelemetryConsent, { consent }),
   },
 
   events: {

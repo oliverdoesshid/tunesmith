@@ -18,9 +18,42 @@ function topologyLine(status: GameStatus): string | null {
   return `${topology.logicalProcessors} logical processors · ${performance} performance · ${topology.logicalProcessors - performance} efficiency`;
 }
 
+const CPU_SOURCE_LABEL: Record<string, string> = {
+  'libre-hardware-monitor': 'LibreHardwareMonitor',
+  'open-hardware-monitor': 'OpenHardwareMonitor',
+  'acpi-thermal-zone': 'ACPI zone',
+  'thermal-zone-counter': 'thermal zone',
+};
+
+const GPU_SOURCE_LABEL: Record<string, string> = {
+  'libre-hardware-monitor': 'LibreHardwareMonitor',
+  'open-hardware-monitor': 'OpenHardwareMonitor',
+  'nvidia-smi': 'nvidia-smi',
+};
+
+function telemetryLine(status: GameStatus): string | null {
+  const sample = status.telemetry;
+  if (sample === null) return null;
+  const parts: string[] = [];
+  if (sample.cpuTempC !== null) {
+    parts.push(`CPU ${sample.cpuTempC.toFixed(1)}°C (${CPU_SOURCE_LABEL[sample.cpuTempSource] ?? 'zone'})`);
+  }
+  if (sample.gpuTempC !== null) {
+    parts.push(`GPU ${sample.gpuTempC.toFixed(1)}°C (${GPU_SOURCE_LABEL[sample.gpuTempSource] ?? 'vendor'})`);
+  }
+  if (sample.powerDrawW !== null) {
+    parts.push(sample.powerSource === 'battery' ? `${sample.powerDrawW.toFixed(1)} W draw` : `${sample.powerDrawW.toFixed(1)} W package`);
+  }
+  if (sample.onAc !== null) parts.push(sample.onAc ? 'AC power' : 'on battery');
+  if (sample.onAc === false && sample.batteryPercent !== null) parts.push(`${sample.batteryPercent}%`);
+  return parts.length === 0 ? null : parts.join(' · ');
+}
+
 export function GameModePanel({ status, profiles, busy, onToggle, onStop }: GameModePanelProps): ReactNode {
   const watching = status?.watching ?? false;
   const active = status?.active ?? null;
+  const guard = status?.guard ?? null;
+  const telemetry = status === null ? null : telemetryLine(status);
   const blocked = profiles.filter((profile) => profile.blocked).length;
 
   return (
@@ -92,6 +125,16 @@ export function GameModePanel({ status, profiles, busy, onToggle, onStop }: Game
       )}
 
       {status !== null && topologyLine(status) !== null && <p className="muted small">CPU: {topologyLine(status)}</p>}
+
+      {telemetry !== null && <p className="muted small">Telemetry: {telemetry}</p>}
+
+      {guard?.status === 'unavailable' && <p className="muted small">{guard.message}</p>}
+
+      {guard?.status === 'ok' && guard.missing.length > 0 && (
+        <p className="muted small">Guard inputs unavailable: {guard.missing.join(', ')}.</p>
+      )}
+
+      {guard?.status === 'trip' && <p className="small badge-aggressive">Thermal guard: {guard.message}</p>}
 
       {status !== null && status.packages.length > 0 && (
         <p className="muted small">

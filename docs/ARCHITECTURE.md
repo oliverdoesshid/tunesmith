@@ -330,8 +330,10 @@ renderer        main                         engine                 OS
    every place that needs updating.
 2. **New power setting**: verify the GUID with `powercfg -query` on a real machine first;
    hidden settings cannot be captured and must not be added.
-3. **Signed preset distribution**: replace the trust level `bundled-verified` with an Ed25519
-   signature check over the manifest (see `SECURITY-MODEL.md`).
+3. **Signed preset distribution**: implemented for the marketplace
+   (`src/main/market/`, `docs/MARKETPLACE.md`) with Ed25519 over a canonical catalog and
+   per-entry digests. Bundled presets still use the index digest, which is integrity, not
+   authorship.
 4. **Non-Windows**: `interpretSnapshot` is already platform-neutral; the adapters are not.
 
 ## 12. Per-game runtime engine

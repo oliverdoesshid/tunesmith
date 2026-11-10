@@ -21,11 +21,19 @@
       { "process": "brave.exe", "action": "lower-priority", "priority": "Idle" }
     ]
   },
+  "guards": {
+    "maxCpuTempC": 90,
+    "maxGpuTempC": 87,
+    "onBattery": "restore",
+    "cooldownSeconds": 180
+  },
   "notes": [
     "Voice chat is untouched: Discord and Ubisoft Connect are not listed, so calls and the game overlay keep working.",
     "Nothing is suspended, only deprioritised; tabs, downloads and music resume instantly when the round ends.",
     "If you run the Vulkan build, duplicate this file and change the trigger exe to RainbowSix_Vulkan.exe.",
     "On a CPU without efficiency cores the affinity plan falls back to every logical processor; the rest still applies.",
+    "Thermal guard: above 90°C CPU or 87°C GPU the profile releases the game and waits 3 minutes before re-applying, so tuning never stacks on top of thermal throttling.",
+    "GPU temperature needs nvidia-smi; on other GPUs that half of the guard is reported as unenforced rather than assumed safe.",
     "Biggest FPS wins are still in-game: Vulkan API, resolution scale at 100, and shadows/Lumen-equivalent effects down."
   ]
 }

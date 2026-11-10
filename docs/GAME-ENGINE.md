@@ -244,6 +244,57 @@ executable can change between builds, so an image-name-only trigger is brittle a
   resolve (logged, not fatal). Sideloaded/MSIX titles behave the same as Store ones;
   `SignatureKind` is recorded but never used to gate anything.
 
+### 4.9 Hardware triggers and thermal guards
+
+Process focus is a proxy for load, and a poor one on a laptop: the game can be focused
+while the package is at 96 °C and the firmware is already throttling. A profile may
+therefore declare `guards` alongside its process trigger:
+
+```json
+"guards": {
+  "maxCpuTempC": 90,
+  "maxGpuTempC": 87,
+  "onBattery": "restore",
+  "cooldownSeconds": 180,
+  "sampleSeconds": 10
+}
+```
+
+- **Semantics.** A guard trips at or above its limit (`>=`, so 90 °C with a 90 °C limit
+trips). A trip ends the session exactly like closing the game: affinity and priority are
+not persisted, suspended processes resume, Efficiency Mode is cleared, the GPU preference
+is restored and the timer holder stops. The session records a failed
+`thermal-guard` adjustment quoting the reading, so the UI says *why* tuning released.
+- **Cooldown.** After a trip the profile is not re-applied for `cooldownSeconds`
+(default 120) even if the game stays focused. Re-tuning immediately after a thermal event
+is the behaviour this feature exists to prevent. Activation is also refused outright if
+the machine is already over its limit when the game is first focused.
+- **Battery.** `onBattery: "restore"` releases the profile when the machine switches to
+battery, which is what most gaming laptops do when the charger is pulled mid-session.
+- **Sources, best first.** LibreHardwareMonitor, then OpenHardwareMonitor, are read
+read-only through their WMI namespaces when either is already running. They are the only
+sources here that report a true CPU package temperature, GPU temperature on NVIDIA, AMD and
+Intel hardware alike, and real package power; installing one is the supported way to get
+full coverage on a machine whose firmware exposes nothing. Without a monitor the chain falls
+back to ACPI thermal zones (`MSAcpi_ThermalZoneTemperature`, then
+`Win32_PerfFormattedData_Counters_ThermalZoneInformation`) for CPU — a *zone* reading, which
+laptops usually expose and many desktops do not — and to `nvidia-smi` (including the legacy
+NVSMI path) for NVIDIA GPUs. Power draw comes from the monitor when present, otherwise from
+the battery discharge rate while on battery. AC state comes from `GetSystemPowerStatus` with
+a `Win32_Battery` fallback, so desktops, laptops, handhelds and multi-GPU systems all take
+the same path and simply report a shorter source list.
+- **Provider selection is tested, not inferred.** The PowerShell side returns raw
+candidates from every source; the preference order above lives in `normaliseTelemetry` and
+has unit tests, so a switch to a better source cannot silently change behaviour on a
+machine that has both.
+- **Fail-open but loud.** A guard whose sensor is unavailable is never reported as passing
+and never trips on a missing reading. If nothing at all can be read the session records
+`Guard not enforced`; if only part can, it records `Partly enforced` once and keeps the
+readable half active. A real trip always wins over a missing sibling sensor.
+- **What it deliberately does not do.** Guards never edit the Windows power plan. Plan
+changes belong to presets, which are captured and journaled; reaching into them from the
+game engine would create a second mutation path that rollback does not cover.
+
 ## 5. Crash and exit safety
 
 The failure that matters is "the app died while Chrome was suspended". Three mechanisms
@@ -269,7 +320,8 @@ priority, suspend rules carry no priority and priority rules must carry one.
 Semantic (`evaluateGameProfile`): protected trigger, protected background process, suspend
 with `conservative` risk, suspension budget, affinity indices that do not exist on this
 machine, processor groups > 64. Warnings: non-hybrid CPU with a P-core strategy, power-saving
-GPU preference, standby flush, launcher suspension, timer hold (power cost).
+GPU preference, standby flush, launcher suspension, timer hold (power cost), and thermal
+limits tight enough to trip under ordinary load (CPU below 75 °C, GPU below 70 °C).
 
 A blocked profile is suppressed for as long as that executable stays in the foreground; it is
 not retried every tick.

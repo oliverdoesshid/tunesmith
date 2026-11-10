@@ -19,6 +19,7 @@ import {
 import { setEcoMode } from './eco';
 import { startTimerHold } from './timer';
 import { resolvePackage } from './packages';
+import { readTelemetry } from './telemetry';
 import { detectTopology } from './topology';
 
 export function createSystemGameAdapter(): GameAdapter {
@@ -36,5 +37,6 @@ export function createSystemGameAdapter(): GameAdapter {
     writeGpuPreference,
     restoreGpuPreference,
     resolvePackage,
+    readTelemetry,
   };
 }

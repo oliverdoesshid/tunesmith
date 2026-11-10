@@ -60,6 +60,68 @@ export interface GameProfileActions {
   backgroundRules?: BackgroundRule[];
 }
 
+/**
+ * Thermal / power safety guards. A trip ends the session (everything is restored) and
+ * suppresses re-activation for `cooldownSeconds`, because re-applying aggressive tuning
+ * onto a hot machine is exactly the failure this feature exists to prevent.
+ *
+ * Thresholds are integers in °C; the engine trips at `>=` the limit.
+ */
+export interface ThermalGuards {
+  maxCpuTempC?: number;
+  maxGpuTempC?: number;
+  /** `restore` ends the session when the machine switches to battery. */
+  onBattery?: 'restore' | 'ignore';
+  /** Minimum time before the profile may auto-apply again after a trip. */
+  cooldownSeconds?: number;
+  /** How often telemetry is read while the session is active. */
+  sampleSeconds?: number;
+}
+
+export type CpuTempSource =
+  | 'libre-hardware-monitor'
+  | 'open-hardware-monitor'
+  | 'acpi-thermal-zone'
+  | 'thermal-zone-counter'
+  | 'none';
+
+export type GpuTempSource =
+  | 'libre-hardware-monitor'
+  | 'open-hardware-monitor'
+  | 'nvidia-smi'
+  | 'none';
+
+export type PowerSource =
+  | 'libre-hardware-monitor'
+  | 'open-hardware-monitor'
+  | 'battery'
+  | 'none';
+
+/** One read-only hardware sample. Any field may be null when the machine cannot supply it. */
+export interface TelemetrySample {
+  at: string;
+  cpuTempC: number | null;
+  cpuTempSource: CpuTempSource;
+  gpuTempC: number | null;
+  gpuTempSource: GpuTempSource;
+  powerDrawW: number | null;
+  powerSource: PowerSource;
+  onAc: boolean | null;
+  batteryPercent: number | null;
+}
+
+export type GuardTripReason =
+  | { kind: 'cpu-temp'; valueC: number; limitC: number }
+  | { kind: 'gpu-temp'; valueC: number; limitC: number }
+  | { kind: 'on-battery'; batteryPercent: number | null };
+
+export type GuardOutcome =
+  /** `missing` lists configured inputs that could not be read; the rest were enforced. */
+  | { status: 'ok'; checked: string[]; missing: string[] }
+  | { status: 'trip'; reason: GuardTripReason; message: string }
+  /** The guard could not be enforced because a configured signal was unavailable. */
+  | { status: 'unavailable'; missing: string[]; message: string };
+
 export interface GameTrigger {
   /**
    * Image name, matched case-insensitively. Optional: a packaged title can be targeted
@@ -89,6 +151,8 @@ export interface GameProfile {
   risk: RiskLevel;
   trigger: GameTrigger;
   actions: GameProfileActions;
+  /** Optional thermal / AC-power safety limits for this title. */
+  guards?: ThermalGuards;
   notes?: string[];
 }
 
@@ -157,6 +221,7 @@ export type GamePhase = 'idle' | 'launching' | 'active' | 'restoring' | 'error';
 
 export type AdjustmentKind =
   | 'package'
+  | 'thermal-guard'
   | 'affinity'
   | 'priority'
   | 'gpu-preference'
@@ -206,6 +271,10 @@ export interface GameStatus {
   topology: CpuTopology | null;
   /** Packages resolved from the loaded profiles (Store / UWP titles). */
   packages: GamePackageInfo[];
+  /** Last telemetry sample read while a guarded session was active. */
+  telemetry: TelemetrySample | null;
+  /** Result of the most recent guard evaluation. */
+  guard: GuardOutcome | null;
   profiles: number;
   pollMs: number;
 }

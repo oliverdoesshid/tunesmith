@@ -22,6 +22,9 @@ export const IPC_CHANNELS = {
   gameSetWatching: 'game:set-watching',
   gameProfiles: 'game:profiles',
   gameStop: 'game:stop',
+  marketStatus: 'market:status',
+  marketInstall: 'market:install',
+  marketTelemetryConsent: 'market:telemetry-consent',
 } as const;
 
 export const EVENT_CHANNELS = {
