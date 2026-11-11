@@ -2,7 +2,9 @@ import { useState, type ReactNode } from 'react';
 import type { PresetSummary } from '../../shared/ipc';
 import type { CompiledPlan, StepGroup } from '../../shared/preset/compiler';
 import type { EngineProgress } from '../../shared/session';
+import type { ServiceDependencyGraph } from '../../shared/service-graph';
 import { RiskBadge } from './Chrome';
+import { ServiceDependencyPanel } from './ServiceDependencyPanel';
 
 const GROUPS: StepGroup[] = ['Registry', 'Services', 'Priorities', 'Power'];
 
@@ -11,6 +13,8 @@ export function PlanDialog({
   plan,
   busy,
   progress,
+  serviceGraph,
+  serviceGraphError,
   onClose,
   onApply,
 }: {
@@ -18,6 +22,8 @@ export function PlanDialog({
   plan: CompiledPlan;
   busy: boolean;
   progress: EngineProgress | null;
+  serviceGraph: ServiceDependencyGraph | null;
+  serviceGraphError: string | null;
   onClose: () => void;
   onApply: (options: { consent: boolean; risk: boolean }) => void;
 }): ReactNode {
@@ -55,6 +61,10 @@ export function PlanDialog({
               {plan.overrides > 0 && <span className="chip chip-muted">{plan.overrides} override(s)</span>}
             </div>
           </section>
+
+          {plan.summary.Services > 0 && (
+            <ServiceDependencyPanel graph={serviceGraph} error={serviceGraphError} />
+          )}
 
           {blockers.length > 0 && (
             <section className="finding finding-block">

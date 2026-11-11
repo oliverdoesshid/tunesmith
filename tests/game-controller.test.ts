@@ -2,7 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { GameController, type GameAdapter, type ProfilesSource, type SessionStore } from '../src/main/engine/game/controller';
 import type { StoredGameSession } from '../src/main/engine/game/store';
 import { gameProfileSchema } from '../src/shared/game/schema';
-import type { CpuTopology, GameProfile } from '../src/shared/game/types';
+import type {
+  CpuTopology,
+  GameNetworkApplyResult,
+  GameNetworkSettings,
+  GameNetworkSnapshot,
+  GameNetworkTarget,
+  GameProfile,
+} from '../src/shared/game/types';
 import type { PriorityClass } from '../src/shared/types';
 
 const TOPOLOGY: CpuTopology = {
@@ -36,11 +43,40 @@ const PROFILE: GameProfile = gameProfileSchema.parse({
 const GAME_PATH = 'C:\\Games\\game.exe';
 const START = '2026-01-01T00:00:00.000Z';
 
+const NETWORK_PROFILE: GameProfile = gameProfileSchema.parse({
+  schemaVersion: 1,
+  id: 'network-game',
+  name: 'Network Game',
+  version: '1.0.0',
+  description: 'A profile used by the unit tests to exercise game network tuning.',
+  authors: [{ handle: 'tester' }],
+  license: 'MIT',
+  risk: 'moderate',
+  trigger: { exe: 'game.exe' },
+  actions: { network: { tcpAckFrequency: 1, tcpNoDelay: 1 } },
+});
+
 class FakeAdapter implements GameAdapter {
   calls: string[] = [];
   priorities = new Map<number, PriorityClass>();
   suspended = new Set<number>();
   gpu = new Map<string, string | null>();
+  networkTargets: GameNetworkTarget[] = [
+    {
+      interfaceGuid: '11111111-2222-3333-4444-555555555555',
+      adapterName: 'Ethernet',
+      adapterDescription: 'Test Ethernet',
+      endpoints: [
+        {
+          protocol: 'tcp',
+          localAddress: '192.168.1.20',
+          localPort: 50_000,
+          remoteAddress: '203.0.113.10',
+          remotePort: 27_015,
+        },
+      ],
+    },
+  ];
 
   async topology(): Promise<CpuTopology> {
     return TOPOLOGY;
@@ -81,6 +117,25 @@ class FakeAdapter implements GameAdapter {
   async restoreGpuPreference(exePath: string, previous: string | null): Promise<void> {
     this.calls.push(`restore-gpu:${exePath}:${previous ?? 'null'}`);
     this.gpu.set(exePath, previous);
+  }
+  async inspectNetwork(pid: number): Promise<GameNetworkTarget[]> {
+    this.calls.push(`network-inspect:${pid}`);
+    return this.networkTargets;
+  }
+  async captureNetwork(targets: readonly GameNetworkTarget[]): Promise<GameNetworkSnapshot> {
+    this.calls.push('network-capture');
+    return {
+      capturedAt: START,
+      interfaces: targets.map((target) => ({ ...target, tcpAckFrequency: 2, tcpNoDelay: 0 })),
+    };
+  }
+  async applyNetwork(snapshot: GameNetworkSnapshot, settings: GameNetworkSettings): Promise<GameNetworkApplyResult> {
+    this.calls.push(`network-apply:${snapshot.interfaces.length}:${settings.tcpAckFrequency ?? 'x'}`);
+    return { ok: true, tcpInterfaces: snapshot.interfaces.length, adapter: 'not-requested', message: 'Applied.' };
+  }
+  async restoreNetwork(snapshot: GameNetworkSnapshot): Promise<string[]> {
+    this.calls.push(`network-restore:${snapshot.interfaces.length}`);
+    return [];
   }
 }
 
@@ -182,6 +237,28 @@ describe('game controller', () => {
     const write = adapter.calls.indexOf(`write-gpu:${GAME_PATH}:high-performance`);
     expect(read).toBeGreaterThanOrEqual(0);
     expect(write).toBeGreaterThan(read);
+  });
+
+  it('captures the game network route before changing it and restores it on exit', async () => {
+    const { controller, adapter, sessions } = makeController({ profiles: [NETWORK_PROFILE] });
+    await controller.setWatching(true);
+
+    controller.handleSnapshot(withBrowser);
+    await controller.settle();
+
+    const inspected = adapter.calls.indexOf('network-inspect:100');
+    const captured = adapter.calls.indexOf('network-capture');
+    const applied = adapter.calls.findIndex((call) => call.startsWith('network-apply:'));
+    expect(inspected).toBeGreaterThanOrEqual(0);
+    expect(captured).toBeGreaterThan(inspected);
+    expect(applied).toBeGreaterThan(captured);
+
+    const saved = sessions.saved.find((session) => session.network !== undefined);
+    expect(saved?.network?.interfaces[0]?.tcpAckFrequency).toBe(2);
+    expect(saved?.network?.interfaces[0]?.tcpNoDelay).toBe(0);
+
+    await controller.stopActive();
+    expect(adapter.calls.some((call) => call.startsWith('network-restore:'))).toBe(true);
   });
 
   it('does not tear down on the first missing tick', async () => {

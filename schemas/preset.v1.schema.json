@@ -223,6 +223,8 @@
                       "processor-min-state",
                       "processor-max-state",
                       "core-parking-min-cores",
+                      "core-parking-max-cores",
+                      "energy-performance-preference",
                       "usb-selective-suspend",
                       "pcie-link-state",
                       "disk-idle-timeout"

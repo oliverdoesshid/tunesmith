@@ -186,6 +186,24 @@ export function evaluateGameProfile(profile: GameProfile, topology: CpuTopology 
     });
   }
 
+  if (profile.actions.network !== undefined) {
+    findings.push({
+      severity: 'warn',
+      code: 'game.network-tuning',
+      target: profile.id,
+      message:
+        'Network tuning changes the TCP stack interface carrying this game\'s established server connection. It requires administrator rights, only affects TCP flows (UDP-only gameplay is unaffected), and may briefly disrupt the adapter if Windows applies the interrupt-moderation property on the next link reset. It is restored when the game exits.',
+    });
+    if (profile.risk === 'conservative') {
+      findings.push({
+        severity: 'block',
+        code: 'game.conservative-network',
+        target: profile.id,
+        message: 'A conservative profile must not change TCP or adapter settings.',
+      });
+    }
+  }
+
   if (profile.guards?.maxCpuTempC !== undefined && profile.guards.maxCpuTempC < 75) {
     findings.push({
       severity: 'warn',

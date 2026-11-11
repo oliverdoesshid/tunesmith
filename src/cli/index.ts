@@ -13,7 +13,7 @@
  * Run with:
  *   node dist/cli/index.cjs apply --preset competitive-fps-low-latency --dry-run
  */
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { SystemAdapter } from '../main/engine/adapter';
@@ -25,6 +25,7 @@ import { detectHardware } from '../main/platform/hardware';
 import { createRestorePoint } from '../main/platform/restore-point';
 import { isElevated } from '../main/runtime';
 import { parseArgs } from './args';
+import { installedPresetDirectory, presetDirectories } from './paths';
 import { runCli, type CliDeps } from './run';
 
 async function readVersion(): Promise<string> {
@@ -55,7 +56,15 @@ async function main(): Promise<number> {
   const userData = preliminary.userData ?? defaultUserData();
   const journal = new JournalStore(path.join(userData, 'sessions'));
   const lock = new SessionLock(userData);
-  const repo = new PresetRepository(path.resolve(__dirname, '../../presets/community'));
+  // The desktop creates its writable community directory at startup. Do the same so a
+  // first CLI run does not report a harmless ENOENT as a preset-loading failure.
+  await mkdir(installedPresetDirectory(userData), { recursive: true });
+  // Same sources and trust rules as the desktop app: signed bundled presets plus the
+  // marketplace-installed community directory. The CLI is a second entry point into the
+  // same pipeline; it must not bypass the integrity gate the GUI enforces.
+  const repo = new PresetRepository(
+    presetDirectories(path.resolve(__dirname, '../../presets/community'), userData),
+  );
   const adapter = new SystemAdapter();
   const executor = new Executor({
     adapter,

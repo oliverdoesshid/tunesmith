@@ -47,6 +47,12 @@ export interface GameProfileActions {
   /** Windows Graphics Settings per-app preference for the game executable. */
   gpuPreference?: 'high-performance' | 'power-saving';
   /**
+   * Per-interface TCP latency tuning for the interface carrying an established game
+   * server connection. The engine discovers the route at activation and never accepts a
+   * preset-supplied adapter or registry path.
+   */
+  network?: GameNetworkSettings;
+  /**
    * Purge the standby list before the game starts. Off by default everywhere, because
    * discarding cached file pages can make a game load *slower*; see docs/GAME-ENGINE.md.
    */
@@ -58,6 +64,58 @@ export interface GameProfileActions {
    */
   timerHold?: boolean;
   backgroundRules?: BackgroundRule[];
+}
+
+export interface GameNetworkSettings {
+  /** Microsoft's per-interface acknowledgement frequency; 1 disables delayed ACKs. */
+  tcpAckFrequency?: 0 | 1 | 2;
+  /** 1 disables Nagle-style delaying for the selected interface. */
+  tcpNoDelay?: 0 | 1;
+  /** Best-effort NIC advanced property; skipped when Windows exposes no such property. */
+  interruptModeration?: 'enabled' | 'disabled';
+}
+
+export interface GameNetworkEndpoint {
+  protocol: 'tcp' | 'udp';
+  localAddress: string;
+  localPort: number;
+  remoteAddress: string | null;
+  remotePort: number | null;
+}
+
+/** Read-only route discovery result for the game process. */
+export interface GameNetworkTarget {
+  interfaceGuid: string;
+  adapterName: string;
+  adapterDescription: string;
+  endpoints: GameNetworkEndpoint[];
+}
+
+export interface GameNetworkInterfaceState extends GameNetworkTarget {
+  tcpAckFrequency: number | null;
+  tcpNoDelay: number | null;
+}
+
+export interface GameNetworkAdapterState {
+  adapterName: string;
+  registryKeyword: string;
+  previousRegistryValue: string;
+  displayName: string;
+}
+
+/** Durable game-session snapshot written before any network value is changed. */
+export interface GameNetworkSnapshot {
+  capturedAt: string;
+  interfaces: GameNetworkInterfaceState[];
+  interruptModeration?: GameNetworkAdapterState;
+}
+
+export interface GameNetworkApplyResult {
+  /** True when at least one requested value was applied. */
+  ok: boolean;
+  tcpInterfaces: number;
+  adapter: 'applied' | 'unavailable' | 'not-requested' | 'failed';
+  message: string;
 }
 
 /**
@@ -222,9 +280,11 @@ export type GamePhase = 'idle' | 'launching' | 'active' | 'restoring' | 'error';
 export type AdjustmentKind =
   | 'package'
   | 'thermal-guard'
+  | 'adaptation'
   | 'affinity'
   | 'priority'
   | 'gpu-preference'
+  | 'network'
   | 'memory-flush'
   | 'background-priority'
   | 'background-suspend'
@@ -279,6 +339,47 @@ export interface GameStatus {
   pollMs: number;
 }
 
+export type GameLibrarySource = 'steam' | 'epic' | 'xbox' | 'gog';
+export interface DiscoveredExecutable {
+  /** Bare image name, e.g. `Cyberpunk2077.exe`. */
+  name: string;
+  /** Absolute path inside the install directory. */
+  path: string;
+}
+
+/** One installed title found by the read-only library scanner. */
+export interface DiscoveredGame {
+  /** Stable per-source key, e.g. `steam:1091500`. */
+  id: string;
+  name: string;
+  source: GameLibrarySource;
+  appId: string | null;
+  installDir: string;
+  /** Best candidates, ranked; may be empty when no executable could be identified. */
+  executables: DiscoveredExecutable[];
+  executablePath: string | null;
+  packageFamilyName: string | null;
+  /** Profiles installed locally whose trigger matches this title. */
+  profileIds: string[];
+}
+
+export interface GameLibraryScanResult {
+  scannedAt: string;
+  games: DiscoveredGame[];
+  errors: { source: GameLibrarySource | 'library'; message: string }[];
+}
+
+/** Outcome of a quick-launch request from the library grid. */
+export interface GameLaunchResult {
+  gameId: string;
+  /** False when Windows refused to start the executable; `message` explains why. */
+  launched: boolean;
+  /** Whether the profile watcher is armed after the attempt. */
+  watching: boolean;
+  executablePath: string | null;
+  message: string;
+}
+
 /** Renderer-facing summary of one game profile, already policy-evaluated. */
 export interface GameProfileSummary {
   id: string;
@@ -295,4 +396,8 @@ export interface GameProfileSummary {
   /** Human-readable list such as "Affinity: performance cores". */
   actions: string[];
   notes: string[];
+  /** True when a matching title was found in a local game library. */
+  installed: boolean;
+  /** Executable or install directory that matched, when `installed` is true. */
+  detectedPath: string | null;
 }

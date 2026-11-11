@@ -1,7 +1,7 @@
 # Architecture
 
 > Status: foundational skeleton. It builds, typechecks, and its core logic is covered by
-> 136 unit tests. It has not been run against a live Windows host for the *mutation* paths
+> 334 unit tests across 28 files. It has not been run against a live Windows host for the *mutation* paths
 > (see [Verification](../README.md#verification)), by design: no test suite in this repo is
 > allowed to change the machine it runs on.
 
@@ -33,7 +33,7 @@ are not, because a wrong value bricks the boot and no journal can undo it.
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ Renderer (React, sandboxed, no Node)                                         │
-│   App.tsx → HardwarePanel · PresetBrowser · PlanDialog · SessionPanel        │
+│   App.tsx → HardwarePanel · PresetBrowser · InstalledPresets · PlanDialog    │
 └───────────────────────────────┬──────────────────────────────────────────────┘
                                 │  window.tunesmith (contextBridge, narrow API)
 ┌───────────────────────────────┴──────────────────────────────────────────────┐
@@ -48,6 +48,7 @@ are not, because a wrong value bricks the boot and no journal can undo it.
 │  platform/   registry (reg.exe) · services (sc.exe) · power (powercfg.exe)   │
 │              processes (PowerShell) · restore-point (PowerShell) · hardware  │
 │  security/   CSP, navigation guards, permission denial                       │
+│  overlay/    transparent, click-through OSD window (separate renderer)        │
 └───────────────────────────────┬──────────────────────────────────────────────┘
                                 │  Windows APIs via fixed, parameterised calls
 ┌───────────────────────────────┴──────────────────────────────────────────────┐
@@ -68,13 +69,34 @@ compiler · loader · session types. Used by main, renderer, CLI and tests alike
 | `shared/preset/matcher.ts` | Hardware selector + profile-condition evaluation | signature |
 | `shared/preset/compiler.ts` | Preset + machine → ordered, deduplicated, typed plan | schema, policy, matcher |
 | `shared/preset/loader.ts` | Read, digest-verify, parse, policy-evaluate a preset library | schema, policy |
+| `shared/service-graph.ts` | Bounded, read-only SCM dependency tree for service actions | policy, session types |
 | `main/platform/*` | Thin adapters over one system tool each | — |
 | `main/platform/interrupts.ts` | MSI-X / IRQ-priority / per-interface TCP capture-apply-restore | registry, powershell |
+| `main/platform/service-registry.ts` | Fixed read-only SCM inventory + zod-normalised rows | powershell, zod |
 | `main/engine/journal.ts` | Append-only durable log + atomic manifests | node:fs |
 | `main/engine/executor.ts` | Transaction: capture → journal → apply → verify → rollback | journal, lock, adapter |
-| `shared/game/*` | Game profile schema, policy, affinity maths, trigger matching | shared |
-| `main/platform/game/*` | Watcher, affinity/priority/suspend, CPU topology, GPU preference | platform |
+| `shared/game/*` | Game profile schema, policy, affinity maths, trigger matching, library matching | shared |
+| `main/platform/game/*` | Watcher (`tasklist` + event-driven foreground), affinity/priority/suspend, CPU topology, GPU preference, read-only library discovery | platform |
 | `main/engine/game/*` | Profile loading, session persistence, activate/restore state machine | platform/game |
+| `main/platform/game/network.ts` | Game-route discovery; per-interface TCP and NIC capture/apply/restore | interrupts, powershell |
+| `main/platform/stability.ts` | Read-only temperature and Windows `% DPC Time` probe | platform/game |
+| `main/engine/post-apply.ts` | Five-minute aggressive-apply watchdog; calls the journal rollback path | engine/executor |
+| `shared/post-apply.ts` | Post-apply watchdog DTOs shared by main and renderer | shared |
+| `main/health/*` | Health baseline, read-only OS/file probes, drift comparison, stale-journal cleanup | platform, engine/journal |
+| `shared/game/artwork.ts` | Artwork DTOs; only local `ts-art://` URLs cross the bridge | — |
+| `main/services/steamgriddb.ts` | SteamGridDB search/artwork fetch, strict parsing, disk cache | zod, artwork-files |
+| `main/services/artwork-files.ts` | HTTPS host allowlist, cache path mapping, image magic-byte checks | — |
+| `main/services/artwork-protocol.ts` | Private `ts-art://` protocol serving cached images | electron |
+| `main/services/game-files.ts` | Open/launch validation against discovered install roots | shared/game |
+| `shared/game/osd.ts` | Display-only OSD DTOs and the `onState` bridge type | — |
+| `main/platform/game/frame-script.ts` | Static ETW present-sampler C# body, DXGI/D3D9 providers | — |
+| `main/platform/game/frame-monitor.ts` | Child lifecycle, line parsing, explicit unavailable state | frame-script |
+| `main/overlay/geometry.ts` | Pure placement/clamping in DIP space | — |
+| `main/overlay/state.ts` | `GameStatus` + frame sample → `OsdState` | shared/game |
+| `main/overlay/controller.ts` | Transparent BrowserWindow, anchoring, ETW lifecycle, toggle | electron, platform/game |
+| `preload/overlay.ts` | Display-only bridge; no invoke, no app API | shared/game/osd |
+| `renderer/overlay.tsx` | OSD layout and browser-preview fixture | shared/game/osd |
+| `renderer/components/GameLauncherGrid.tsx` | Artwork grid, lazy batches, hover actions, error boundary | shared/game, preload |
 | `main/ipc.ts` | Privileged surface: sender check, zod parse, error envelope | engine, platform |
 | `renderer/*` | Presentation only; no privileged capability | shared types |
 
@@ -156,7 +178,7 @@ at most 8 disabled services per profile, 120 actions per profile, 12 profiles pe
 | `service` startup/stop | `sc.exe config` / `sc.exe stop` | `START_TYPE` + running state |
 | `priority` | `Get-Process`.PriorityClass (PowerShell) | per-PID current class |
 | `power-plan` | `powercfg -setactive` | active scheme GUID |
-| `power-setting` | `powercfg -setacvalueindex` + `-setactive` | value on the *captured* scheme |
+| `power-setting` | `powercfg -setacvalueindex` + `-setactive` | value on the *captured* scheme; hidden EPP/core-parking values via `PowerReadACValue` |
 | `device-interrupt` | MSI-X enable on enumerated PCI GPUs/NICs (`reg.exe` under `Enum\…\MessageSignaledInterruptProperties`) | per-device `MSISupported` + `MessageNumberLimit`, or "absent" |
 | `irq-priority` | `PriorityControl\IRQ<n>Priority` | current DWORD, or "absent" |
 | `network` | `TcpAckFrequency` / `TCPNoDelay` on every *active* TCP interface | per-interface DWORDs, or "absent" |
@@ -164,6 +186,15 @@ at most 8 disabled services per profile, 120 actions per profile, 12 profiles pe
 Everything is invoked with argv arrays and `shell: false`; the PowerShell paths use
 `-EncodedCommand` (base64 UTF-16LE) with single-quote-escaped, regex-validated literals. No
 preset string is ever concatenated into a command line.
+
+### Service dependency preview
+
+`presets:service-dependencies` is a separate read-only request: it takes only a preset id,
+recompiles the plan, and reads the service keys named by that plan. A fixed PowerShell pass
+collects `DependOnService` / `DependOnGroup`; the pure graph builder caps depth, branch count
+and total nodes, marks cycles and missing targets, and aggregates protected dependents. The
+result is advisory. It is never used by the executor, which still captures through `sc.exe`
+before mutating, and protected targets remain policy-blocked.
 
 ## 5. Compatibility and conditional profiles
 
@@ -197,8 +228,10 @@ changes one value" expressible without repeating the whole profile.
    unknown prior value is impossible, so the change is not allowed.
 3. **Any failure aborts the run and rolls back**, including the failed step itself (it may
    have failed *after* its first system call succeeded).
-4. **Single writer.** A `mkdir`-based lock (`engine.lock/holder.json`) serialises sessions
+4. **Single writer.** A `mkdir`-based lock (`sessions/lock/holder.json`) serialises sessions
    across windows and processes; a stale lock older than 10 minutes is broken once, loudly.
+   A lock directory with no holder record is only broken once its directory mtime is stale,
+   closing the window between `mkdir` and writing `holder.json`.
 
 ### Ordering
 
@@ -211,7 +244,7 @@ they were captured from.
 ### Journal format
 
 ```
-sessions/<uuid>/manifest.json     atomic (write tmp → rename)
+sessions/<uuid>/manifest.json     atomic (fsync tmp → rename → fsync dir where supported)
 sessions/<uuid>/journal.jsonl     append-only, one JSON record per line, fsync per record
 ```
 
@@ -263,10 +296,14 @@ App (owns the state machine)
 ├── Header            signature chip · elevation badge · preview badge · refresh
 ├── SafetyBanner      renders preflight failures/warnings verbatim; offers elevation
 ├── HardwarePanel     CPU/GPU/RAM/storage/OS cards + copyable signature
-├── PresetBrowser     search + filters (All/Compatible/Gaming/Workstation) + cards
+├── PresetBrowser     community marketplace: search, tag filters, compatibility badges
+│   └── CatalogCard  verified SHA-256/Ed25519 chip, install, safety score
+├── InstalledPresets  search + filters for the locally installed library
 │   └── PresetCard    risk badge, match score, step summary, blocked reasons
+├── GameLauncherGrid  installed-title grid · cached SteamGridDB art · Play · Browse local files
+├── GameModePanel     watcher status · OSD toggle · detected libraries · installed profiles
 ├── SessionPanel      session history + per-session Undo + "Restore to default"
-└── PlanDialog        active profiles, grouped diff, safety notes, consent, progress
+└── PlanDialog        active profiles, service dependency trees, grouped diff, notes, consent, progress
 ```
 
 State transitions: `loading → ready → previewing → applying → ready`, with `error` as a
@@ -275,6 +312,12 @@ as a labelled bar with `current/total`, which matters because a checkpoint can t
 
 The renderer is *presentation only*: every capability is a named method on
 `window.tunesmith`, and each one is re-validated in main.
+
+The performance OSD is a second renderer with a deliberately smaller bridge. `overlay.html`
+loads `renderer/overlay.tsx` and `preload/overlay.ts`; that preload exposes only
+`onState(listener)` from `TuneSmithOsdApi`, with no `invoke`, filesystem or app API. The main
+process creates the window only when an active game is in the foreground and sends it a
+read-only `OsdState` snapshot.
 
 ## 8. Data flow: applying a preset
 
@@ -311,6 +354,12 @@ renderer        main                         engine                 OS
 | Restore point throttled | checkpoint result | `preferred`: continue + disclose; `required`: abort |
 | Two sessions | lock holder | second is rejected with the holder's pid |
 | Renderer compromised | sender check + zod | request rejected; no privileged capability exposed |
+| SteamGridDB key missing | batch `configured:false` | placeholders + one setup notice; no requests |
+| SteamGridDB unreachable | per-title status `error` | cached art/placeholders stay; retry action |
+| Game folder vanished | `stat` before `openPath` | error response; nothing opened |
+| No detected executable | Play disabled; main refuses | watcher not armed |
+| No game TCP server route | interface discovery returns empty | network adjustment recorded as skipped; no idle interface is touched |
+| Post-apply temperature / DPC / stall trip | watchdog probe or timer drift | immediate journal rollback, visibly reported; no exit wait |
 
 ## 10. Testing
 
@@ -318,10 +367,24 @@ renderer        main                         engine                 OS
 - **Executor** is tested against a `FakeAdapter`, covering: happy path, failure mid-plan with
   reverse rollback, capture refusal, restore-point abort, idempotent rollback, crash recovery
   of an announced-but-unfinished step, and `restoreDefaults` across sessions.
+- **SessionManager** is tested with real journal files: atomic manifest writes, startup scan
+  of unclosed sessions, newest-first recovery of applied, failed, and announced-without-outcome
+  steps, and stale-lock takeover. A component test covers the interrupted-session banner and
+  its one-click restore callback.
 - **Loader** is tested against a temp directory with a generated index, including digest
   mismatch, unlisted-file smuggling, and duplicate ids.
+- **Game launcher** is tested at three boundaries: path rules (traversal/UNC/device/stream
+  rejection, case-insensitive discovered-root matching, executable containment), IPC routing
+  (sender check, strict payloads, open/launch dispatch), and SteamGridDB parsing/caching
+  (fixtures, magic bytes, host allowlist, cache restart, missing key, retry after an outage).
 - **Shipped presets** are loaded and policy-checked in CI: the library cannot regress into a
   blocked state.
+- **Performance OSD** geometry, state mapping, ETW line parsing, malformed-value rejection and
+  watcher window geometry are tested in `tests/game-overlay.test.ts`. The live ETW path was
+  exercised against a presenting Chromium process (144 FPS, 128.6 1% low).
+- **Game network and post-apply watchdog** are covered by schema/policy tests, a fake-adapter
+  capture-before-apply/restore test, and deterministic watchdog tests for thermal, DPC,
+  freeze, stable, cancel and missing-sensor paths.
 
 ## 11. Extension points
 
@@ -339,13 +402,22 @@ renderer        main                         engine                 OS
 ## 12. Per-game runtime engine
 
 A second, shorter-lived kind of session: while a specific game has focus, a profile applies
-affinity/priority, a per-app GPU preference, optional background silencing, and restores
-everything when the process exits. It shares the durable-before-mutate invariant but keeps its
-own session store, because its lifecycle is "until the game closes" rather than "until the user
-rolls back".
+affinity/priority, a per-app GPU preference, optional background silencing, and optional
+game-route TCP/NIC tuning, then restores everything when the process exits. Network values
+are captured per discovered interface into the game session before mutation; the profile
+never names an adapter or registry path. It shares the durable-before-mutate invariant but
+keeps its own session store, because its lifecycle is "until the game closes" rather than
+"until the user rolls back".
+
+After a successful aggressive *preset* apply, a separate five-minute watchdog samples thermal
+and DPC data. A temperature above 90 °C, sustained DPC pressure, or a freeze-sized process
+stall invokes `Executor.rollback()` through the existing journal; it does not write to the OS
+directly.
 
 Detection is polling, not injection: no code enters the game process, so anti-cheat sees
-nothing to ban. Full design, deny list and verification status: `docs/GAME-ENGINE.md`.
+nothing to ban. Installed titles are found separately by a bounded, read-only scan of Steam,
+Epic, Xbox and GOG metadata; matches are suggestions, not automatic activation. Full design,
+deny list and verification status: `docs/GAME-ENGINE.md`.
 
 ## 13. Deliberate exclusions
 
@@ -357,3 +429,65 @@ nothing to ban. Full design, deny list and verification status: `docs/GAME-ENGIN
 | Direct writes under `HKLM\SYSTEM\CurrentControlSet\Services` | bypasses SCM dependency checks; use the service action |
 | Registry path `Session Manager` | boot-time file operations (`PendingFileRenameOperations`) are an arbitrary-file-move primitive |
 | Service creation | a preset must not be able to install a service |
+
+## 14. System health watchdog
+
+A passive, read-only monitor compares the current Windows build/UBR, servicing flags and
+four core system-image hashes against a baseline under userData. Drift is pushed to the UI;
+it never applies a preset or rewrites a journal automatically. Recovery runs through the
+existing preview, signature, consent and risk gates. Cleanup is an explicit action and only
+removes old, finished journals with zero pending rollback entries. Full design and threat
+notes: `docs/HEALTH-WATCHDOG.md`.
+
+## 15. Game launcher and artwork
+
+The library grid is presentation over the read-only scanner, plus two privileged actions that
+never accept a path from the renderer:
+
+- **Browse local files.** `game:open-folder` takes an absolute path, but the handler resolves it
+  against the cached library scan and opens only a discovered `installDir` with
+  `shell.openPath`. UNC/device paths, `..` segments, alternate data streams and unknown folders
+  are rejected before `stat` or `shell.openPath` is called.
+- **Quick launch.** `game:launch` takes a library id. The handler resolves the title from the
+  scan, requires one of its detected executables inside its install root, arms the profile
+  watcher (`setWatching(true)`) and only then calls `shell.openPath` on that `.exe`. MSIX titles
+  with no directly launchable executable are refused with an explanation rather than guessed at.
+
+Artwork flow:
+
+```
+renderer  game:artwork {key,title} (<= 24, zod)
+   -> SteamGridDbService
+      1. disk cache (7 d positive, 1 d negative, 400-entry cap)
+      2. /search/autocomplete/{title} -> exact/containment match, else not-found
+      3. /grids|heroes|logos/game/{id}?types=static in parallel
+      4. filter nsfw/humor/animated/mime + HTTPS SteamGridDB host allowlist
+      5. download <= 8 MiB, magic-byte image check, SHA-256 filename, atomic rename
+      6. return ts-art://artwork/<sha>.<ext>
+   -> protocol handler reads userData/artwork-cache/images only
+```
+
+The API key lives in the main process (environment or `userData/steamgriddb.key`). No remote URL
+or key crosses the bridge. A 401, timeout, empty match or unavailable CDN becomes a per-title
+`error`/`not-found`, so the grid keeps its placeholder and the UI offers one retry; a missing key
+is a single `not-configured` batch, not 30 card failures. The renderer wraps the grid in an error
+boundary as a last resort.
+
+## 16. Performance OSD
+
+A separate, transparent, frameless, non-focusable and click-through `BrowserWindow`, not a
+DLL injection or swapchain hook. It is anchored to the foreground game's `GetWindowRect`
+rectangle after DPI conversion and clamped to that display. It appears only while the active
+session pid owns the foreground and hides on alt-tab; toggling and status go through the
+narrow `game.osd`/`game:osd-set` channels.
+
+FPS and 1% lows come from a PowerShell/C# ETW child subscribed to `Microsoft-Windows-DXGI`
+PresentStart (42) and `Microsoft-Windows-D3D9` Present (1). The child filters by game pid,
+keeps a 10-second frame window and emits strict JSON that is revalidated in TypeScript.
+Failure to start ETW is displayed as `NO ETW`; the profile and temperature fields continue
+to update. The overlay bridge can only subscribe to state — it has no invoke surface.
+
+Live status: the ETW sampler was verified against a presenting Chromium GPU process
+(144 FPS, 128.6 1% low, 6.9 ms). The window has not yet been exercised over a real game, so
+exclusive-fullscreen and anti-cheat compatibility remain supervised checks. See
+`docs/GAME-ENGINE.md` §12.

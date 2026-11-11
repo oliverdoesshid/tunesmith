@@ -10,82 +10,308 @@
  */
 
 /**
- * Foreground window + watched processes, in one long-lived loop.
+ * Foreground window observer.
  *
- * A persistent process rather than a spawn per tick: polling from Node means paying
- * PowerShell startup (~100 ms of CPU) every couple of seconds, which is indefensible in
- * a tool that claims to make a machine faster. This loop idles in `Start-Sleep`.
+ * There is no polling loop here. The old watcher woke a CLR process every two seconds to
+ * call Get-Process and GetForegroundWindow. This observer installs WinEvent hooks, prints
+ * the current foreground identity once, and then blocks in GetMessage: Windows wakes it
+ * only when focus, a title, or the foreground window rectangle changes.
+ *
+ * Process presence is intentionally not part of this script. It is read separately with
+ * `tasklist /FO CSV /NH`, which is a small native executable rather than a CLR host.
  */
-export const WATCHER_SCRIPT = String.raw`
+export const FOREGROUND_SCRIPT = String.raw`
 Add-Type -TypeDefinition @"
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+
 public static class TsForeground {
-  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hWnd);
+  [DllImport("user32.dll")] static extern int GetWindowTextLength(IntPtr hWnd);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+  [DllImport("user32.dll")] static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+  [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr module, WinEventDelegate callback, uint processId, uint threadId, uint flags);
+  [DllImport("user32.dll")] static extern bool UnhookWinEvent(IntPtr hook);
+  [DllImport("user32.dll")] static extern int GetMessage(out MSG message, IntPtr hWnd, uint min, uint max);
+  [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG message);
+  [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG message);
   [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
   [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-  static extern int GetPackageFamilyName(IntPtr process, ref uint length, System.Text.StringBuilder name);
+  static extern int GetPackageFamilyName(IntPtr process, ref uint length, StringBuilder name);
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+
+  [StructLayout(LayoutKind.Sequential)]
+  public struct MSG {
+    public IntPtr hwnd;
+    public uint message;
+    public IntPtr wParam;
+    public IntPtr lParam;
+    public uint time;
+    public int x;
+    public int y;
+  }
+
+  delegate void WinEventDelegate(IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
+
+  const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+  const uint EVENT_OBJECT_LOCATIONCHANGE = 0x800B;
+  const uint EVENT_OBJECT_NAMECHANGE = 0x800C;
+  const int OBJID_WINDOW = 0;
+  const int CHILDID_SELF = 0;
+  const uint QUERY_LIMITED_INFORMATION = 0x1000;
+
+  static readonly WinEventDelegate Callback = new WinEventDelegate(OnEvent);
+  static readonly object Sync = new object();
+  static readonly Stopwatch Clock = Stopwatch.StartNew();
+  static readonly Timer Throttle = new Timer(OnThrottle, null, Timeout.Infinite, Timeout.Infinite);
+
+  static IntPtr foregroundHook;
+  static IntPtr locationHook;
+  static IntPtr nameHook;
+  static int scheduled;
+  static int dirty;
+  static long lastEmitAt;
+  static bool lastEmitted;
+  static int lastPid;
+  static string lastExe;
+  static string lastPath;
+  static string lastTitle;
+  static string lastPackage;
+  static bool lastHasWindow;
+  static int lastLeft;
+  static int lastTop;
+  static int lastWidth;
+  static int lastHeight;
+
+  /// Per-monitor DPI awareness keeps GetWindowRect in physical pixels on scaled displays;
+  /// Electron's screenToDipRect then converts once into the coordinates it uses.
+  public static void EnableDpiAwareness() {
+    try { SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
+  }
+
+  public static void Run() {
+    try { Console.OutputEncoding = new UTF8Encoding(false); } catch { }
+    EnableDpiAwareness();
+    foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, Callback, 0, 0, 0);
+    locationHook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, Callback, 0, 0, 0);
+    nameHook = SetWinEventHook(EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_NAMECHANGE, IntPtr.Zero, Callback, 0, 0, 0);
+    if (foregroundHook == IntPtr.Zero || locationHook == IntPtr.Zero || nameHook == IntPtr.Zero) {
+      throw new InvalidOperationException("Could not install foreground window hooks.");
+    }
+
+    Emit();
+
+    MSG message;
+    while (GetMessage(out message, IntPtr.Zero, 0, 0) > 0) {
+      TranslateMessage(ref message);
+      DispatchMessage(ref message);
+    }
+  }
+
+  static void OnEvent(IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint thread, uint time) {
+    try {
+      if (eventType == EVENT_OBJECT_LOCATIONCHANGE || eventType == EVENT_OBJECT_NAMECHANGE) {
+        if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF) return;
+        if (hwnd != GetForegroundWindow()) return;
+      } else if (eventType != EVENT_SYSTEM_FOREGROUND) {
+        return;
+      }
+      RequestEmit();
+    } catch { }
+  }
+
+  /// Coalesce a drag/resize burst into at most one line every 80 ms. Without this, a
+  /// window drag would turn into hundreds of JSON lines and wake the main process for each.
+  static void RequestEmit() {
+    Interlocked.Exchange(ref dirty, 1);
+    if (Interlocked.CompareExchange(ref scheduled, 1, 0) != 0) return;
+
+    long elapsed = Clock.ElapsedMilliseconds - Interlocked.Read(ref lastEmitAt);
+    int wait = elapsed >= 80 ? 0 : (int)(80 - elapsed);
+    Throttle.Change(wait, Timeout.Infinite);
+  }
+
+  static void OnThrottle(object state) {
+    Interlocked.Exchange(ref scheduled, 0);
+    if (Interlocked.Exchange(ref dirty, 0) == 1) Emit();
+  }
+
+  static void Emit() {
+    lock (Sync) {
+      Interlocked.Exchange(ref lastEmitAt, Clock.ElapsedMilliseconds);
+
+      IntPtr hwnd = GetForegroundWindow();
+      int pid = 0;
+      string exe = null;
+      string path = null;
+      string title = null;
+      string packageFamily = null;
+      bool hasWindow = false;
+      int left = 0;
+      int top = 0;
+      int width = 0;
+      int height = 0;
+
+      if (hwnd != IntPtr.Zero) {
+        uint targetPid = 0;
+        GetWindowThreadProcessId(hwnd, out targetPid);
+        if (targetPid > 0 && targetPid <= Int32.MaxValue) {
+          pid = (int)targetPid;
+          try {
+            using (Process process = Process.GetProcessById(pid)) {
+              exe = process.ProcessName.ToLowerInvariant() + ".exe";
+              try { path = process.MainModule.FileName; } catch { path = null; }
+            }
+          } catch {
+            exe = null;
+          }
+
+          if (exe == null) {
+            pid = 0;
+          } else {
+            title = WindowTitle(hwnd);
+            packageFamily = FamilyName(pid);
+            if (Usable(hwnd)) {
+              RECT rect = Bounds(hwnd);
+              long windowWidth = (long)rect.Right - rect.Left;
+              long windowHeight = (long)rect.Bottom - rect.Top;
+              if (windowWidth > 0 && windowWidth <= Int32.MaxValue && windowHeight > 0 && windowHeight <= Int32.MaxValue) {
+                hasWindow = true;
+                left = rect.Left;
+                top = rect.Top;
+                width = (int)windowWidth;
+                height = (int)windowHeight;
+              }
+            }
+          }
+        }
+      }
+
+      bool changed = !lastEmitted
+        || pid != lastPid
+        || !String.Equals(exe, lastExe, StringComparison.Ordinal)
+        || !String.Equals(path, lastPath, StringComparison.Ordinal)
+        || !String.Equals(title, lastTitle, StringComparison.Ordinal)
+        || !String.Equals(packageFamily, lastPackage, StringComparison.Ordinal)
+        || hasWindow != lastHasWindow
+        || left != lastLeft
+        || top != lastTop
+        || width != lastWidth
+        || height != lastHeight;
+      if (!changed) return;
+
+      lastEmitted = true;
+      lastPid = pid;
+      lastExe = exe;
+      lastPath = path;
+      lastTitle = title;
+      lastPackage = packageFamily;
+      lastHasWindow = hasWindow;
+      lastLeft = left;
+      lastTop = top;
+      lastWidth = width;
+      lastHeight = height;
+
+      StringBuilder json = new StringBuilder(256);
+      json.Append("{\"foreground\":");
+      if (pid > 0 && exe != null) {
+        json.Append("{\"pid\":").Append(pid).Append(",\"exe\":");
+        AppendString(json, exe);
+        json.Append(",\"path\":");
+        AppendString(json, path);
+        json.Append(",\"title\":");
+        AppendString(json, title);
+        json.Append(",\"packageFamilyName\":");
+        AppendString(json, packageFamily);
+        json.Append('}');
+      } else {
+        json.Append("null");
+      }
+
+      json.Append(",\"window\":");
+      if (hasWindow) {
+        json.Append("{\"left\":").Append(left)
+          .Append(",\"top\":").Append(top)
+          .Append(",\"width\":").Append(width)
+          .Append(",\"height\":").Append(height)
+          .Append('}');
+      } else {
+        json.Append("null");
+      }
+      json.Append('}');
+
+      Console.Out.WriteLine(json.ToString());
+      Console.Out.Flush();
+    }
+  }
+
+  static string WindowTitle(IntPtr hwnd) {
+    int length = GetWindowTextLength(hwnd);
+    if (length <= 0) return null;
+    if (length > 1024) length = 1024;
+    StringBuilder text = new StringBuilder(length + 1);
+    GetWindowText(hwnd, text, text.Capacity);
+    return text.ToString();
+  }
+
+  static bool Usable(IntPtr hwnd) {
+    return hwnd != IntPtr.Zero && IsWindowVisible(hwnd) && !IsIconic(hwnd);
+  }
+
+  static RECT Bounds(IntPtr hwnd) {
+    RECT rect = new RECT();
+    try { GetWindowRect(hwnd, out rect); } catch { }
+    return rect;
+  }
 
   /// Reads the AppContainer package identity for a pid. Returns null for unpackaged
   /// (Win32 / Steam / Epic) processes, which is the common case.
-  public static string FamilyName(int pid) {
-    const uint QUERY_LIMITED = 0x1000;
-    IntPtr handle = OpenProcess(QUERY_LIMITED, false, pid);
+  static string FamilyName(int pid) {
+    IntPtr handle = OpenProcess(QUERY_LIMITED_INFORMATION, false, pid);
     if (handle == IntPtr.Zero) return null;
     try {
       uint length = 256;
-      System.Text.StringBuilder buffer = new System.Text.StringBuilder(256);
+      StringBuilder buffer = new StringBuilder(256);
       int result = GetPackageFamilyName(handle, ref length, buffer);
       return result == 0 ? buffer.ToString() : null;
     } catch { return null; } finally { CloseHandle(handle); }
   }
+
+  static void AppendString(StringBuilder json, string value) {
+    if (value == null) { json.Append("null"); return; }
+    json.Append('"');
+    for (int index = 0; index < value.Length; index += 1) {
+      char character = value[index];
+      switch (character) {
+        case '"': json.Append("\\\""); break;
+        case '\\': json.Append("\\\\"); break;
+        case '\b': json.Append("\\b"); break;
+        case '\f': json.Append("\\f"); break;
+        case '\n': json.Append("\\n"); break;
+        case '\r': json.Append("\\r"); break;
+        case '\t': json.Append("\\t"); break;
+        default:
+          if (character < ' ') json.Append("\\u").Append(((int)character).ToString("x4"));
+          else json.Append(character);
+          break;
+      }
+    }
+    json.Append('"');
+  }
 }
 "@ | Out-Null
 
-$watch = @(WATCH_NAMES)
-$interval = INTERVAL_MS
-
-while ($true) {
-  $foreground = $null
-  try {
-    $handle = [TsForeground]::GetForegroundWindow()
-    if ($handle -ne [IntPtr]::Zero) {
-      $targetPid = 0
-      [void][TsForeground]::GetWindowThreadProcessId($handle, [ref]$targetPid)
-      if ($targetPid -gt 0) {
-        $proc = Get-Process -Id $targetPid -ErrorAction Stop
-        $path = $null
-        try { $path = $proc.Path } catch { $path = $null }
-        $foreground = [pscustomobject]@{
-          pid               = $proc.Id
-          exe               = ($proc.ProcessName.ToLower() + '.exe')
-          path              = $path
-          title             = [string]$proc.MainWindowTitle
-          packageFamilyName = [TsForeground]::FamilyName($targetPid)
-        }
-      }
-    }
-  } catch { $foreground = $null }
-
-  $running = @()
-  try {
-    $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        $watch -contains ($_.ProcessName.ToLower() + '.exe')
-      } | ForEach-Object {
-        [pscustomobject]@{ pid = $_.Id; exe = ($_.ProcessName.ToLower() + '.exe') }
-      })
-  } catch { $running = @() }
-
-  [Console]::Out.WriteLine(([pscustomobject]@{
-    foreground = $foreground
-    running    = $running
-  } | ConvertTo-Json -Depth 4 -Compress))
-  [Console]::Out.Flush()
-
-  Start-Sleep -Milliseconds $interval
-}
+[TsForeground]::Run()
 `;
 
 /**

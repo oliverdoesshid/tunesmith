@@ -16,6 +16,7 @@ export function SessionPanel({
 }): ReactNode {
   const [confirming, setConfirming] = useState(false);
   const pending = sessions.filter((s) => s.pendingRollback > 0).length;
+  const interrupted = sessions.filter((s) => s.interrupted);
 
   return (
     <section className="panel sessions">
@@ -39,6 +40,18 @@ export function SessionPanel({
         </button>
       </div>
 
+      {interrupted.length > 0 && (
+        <div className="banner banner-warn session-recovery" role="alert">
+          <div className="banner-body">
+            <strong>Interrupted session detected</strong>
+            <p className="small">
+              TuneSmith closed while changes were being applied. Use “Restore Previous State” below to
+              undo only the entries recorded in that session’s journal, newest first.
+            </p>
+          </div>
+        </div>
+      )}
+
       {sessions.length === 0 ? (
         <p className="muted empty">
           No tuning sessions yet. Applied presets appear here with a one-click rollback.
@@ -57,6 +70,7 @@ export function SessionPanel({
                 </div>
                 <div className="chip-row">
                   <StatusPill status={session.status} />
+                  {session.interrupted && <span className="chip chip-warn">interrupted</span>}
                   {session.pendingRollback > 0 && (
                     <span className="chip chip-accent">{session.pendingRollback} active change(s)</span>
                   )}
@@ -67,14 +81,14 @@ export function SessionPanel({
                   )}
                 </div>
               </div>
-              {session.pendingRollback > 0 && (
+              {(session.pendingRollback > 0 || session.interrupted) && (
                 <button
                   type="button"
                   className="button button-ghost small"
                   disabled={busy}
                   onClick={() => onRollback(session.id)}
                 >
-                  Undo
+                  {session.interrupted ? 'Restore Previous State' : 'Undo'}
                 </button>
               )}
             </li>

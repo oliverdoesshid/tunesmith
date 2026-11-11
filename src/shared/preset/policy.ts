@@ -205,6 +205,11 @@ const PROTECTED_SERVICES: ReadonlyMap<string, string> = new Map(
   ).map(([name, reason]) => [name.toLowerCase(), reason]),
 );
 
+/** Read-only lookup for surfaces that explain a service risk before a plan runs. */
+export function protectedServiceReason(name: string): string | null {
+  return PROTECTED_SERVICES.get(name.trim().toLowerCase()) ?? null;
+}
+
 /** Legal to change, but the user should know what breaks. */
 const CAUTION_SERVICES: ReadonlyMap<string, string> = new Map(
   (
@@ -436,6 +441,48 @@ function powerFindings(profile: PresetProfile): PolicyFinding[] {
         code: 'power.max-state-limited',
         target: entry.setting,
         message: 'Capping maximum processor state reduces peak performance.',
+      });
+    }
+  }
+
+  // Power settings are system-wide. The hidden HWP/core-parking values are still
+  // captured and restored, but a reviewer must see the scheduling and thermal trade-off.
+  const bySetting = new Map((power.settings ?? []).map((entry) => [entry.setting, entry]));
+  const coreMin = bySetting.get('core-parking-min-cores');
+  const coreMax = bySetting.get('core-parking-max-cores');
+  if (coreMin !== undefined || coreMax !== undefined) {
+    findings.push({
+      severity: 'warn',
+      code: 'power.core-parking',
+      target: 'power:core-parking',
+      message:
+        'Core parking is a system-wide policy, not a per-game affinity rule. Keeping every core unparked reduces scheduling jitter but raises idle heat and power draw.',
+    });
+  }
+  if (coreMin !== undefined && coreMax !== undefined && coreMin.value > coreMax.value) {
+    findings.push({
+      severity: 'block',
+      code: 'power.core-parking-range',
+      target: 'power:core-parking',
+      message: 'Core-parking minimum cannot be greater than core-parking maximum.',
+    });
+  }
+
+  const epp = bySetting.get('energy-performance-preference');
+  if (epp !== undefined) {
+    findings.push({
+      severity: 'warn',
+      code: 'power.epp',
+      target: 'power:energy-performance-preference',
+      message:
+        'EPP is a firmware/HWP frequency-energy hint, not thread placement. Unsupported CPUs or firmware may ignore it; use affinity for P/E-core placement.',
+    });
+    if (epp.value === 0) {
+      findings.push({
+        severity: 'warn',
+        code: 'power.epp-performance',
+        target: 'power:energy-performance-preference',
+        message: 'EPP 0 favors maximum performance and can increase idle heat and power draw.',
       });
     }
   }

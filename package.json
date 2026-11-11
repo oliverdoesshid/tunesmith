@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Windows performance tuning driven by community presets, with a closed action vocabulary and mandatory rollback.",
+  "author": "TuneSmith Contributors",
   "license": "MIT",
   "type": "module",
   "main": "dist/main/index.cjs",
@@ -23,12 +24,16 @@
     "test:watch": "vitest",
     "detect": "node scripts/detect.mjs",
     "presets:hash": "node scripts/hash-presets.mjs",
-    "package": "npm run build && electron-builder --win --x64"
+    "build:win": "electron-builder --win --x64",
+    "package": "npm run build && npm run build:win"
   },
   "dependencies": {
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^24.0.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
@@ -36,8 +41,10 @@
     "electron": "^45.2.3",
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",
+    "jsdom": "^31.0.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "tailwindcss": "^4.3.5",
     "typescript": "^5.9.0",
     "vite": "^8.3.6",
     "vitest": "^5.1.0"
@@ -45,13 +52,29 @@
   "build": {
     "appId": "dev.tunesmith.app",
     "productName": "TuneSmith",
+    "copyright": "Copyright © 2026 TuneSmith Contributors",
+    "directories": {
+      "output": "dist"
+    },
+    "asar": true,
+    "compression": "maximum",
+    "electronLanguages": [
+      "en-US"
+    ],
     "files": [
-      "dist/**/*",
+      "dist/main/**/*",
+      "dist/preload/**/*",
+      "dist/renderer/**/*",
+      "dist/cli/**/*",
       "presets/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.map",
+      "!**/*.d.ts",
+      "!node_modules/**/*"
     ],
     "win": {
       "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "asInvoker",
       "target": [
         "nsis"
       ]
@@ -59,7 +82,15 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TuneSmith",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "differentialPackage": false,
+      "artifactName": "${productName} Setup ${version}.${ext}"
     }
   }
 }

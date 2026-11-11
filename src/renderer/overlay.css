@@ -1,0 +1,222 @@
+:root {
+  --mono: 'Cascadia Mono', 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+  --display: 'Bahnschrift SemiCondensed', 'Bahnschrift Condensed', 'Arial Narrow', 'Segoe UI Variable Display', sans-serif;
+  --ink: #f4f1e4;
+  --muted: #969b8c;
+  --faint: #666c5d;
+  --accent: #d4ff5f;
+  --ok: #77d795;
+  --warn: #e8b45e;
+  --danger: #f07363;
+  --rule: #3a4234;
+}
+
+html,
+body,
+#osd-root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  color: var(--ink);
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-size: 11px;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.osd {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: 9px 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  border-radius: 0;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 8px,
+      rgba(222, 219, 205, 0.016) 8px,
+      rgba(222, 219, 205, 0.016) 9px
+    ),
+    #0d100c;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.46);
+  backdrop-filter: none;
+}
+
+.osd::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 64px;
+  height: 2px;
+  background: var(--accent);
+  content: '';
+  pointer-events: none;
+}
+
+.osd-empty {
+  align-items: center;
+  justify-content: center;
+  flex-direction: row;
+  gap: 7px;
+  color: var(--muted);
+  border-left-color: var(--rule);
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.osd-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 12px;
+}
+
+.osd-dot {
+  width: 4px;
+  height: 4px;
+  flex: none;
+  border-radius: 0;
+  background: var(--ok);
+  box-shadow: none;
+}
+
+.osd-live {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 7px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+}
+
+.osd-preview {
+  padding: 0 3px;
+  border: 1px solid var(--rule);
+  border-radius: 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 6px;
+  letter-spacing: 0.07em;
+}
+
+.osd-elapsed {
+  margin-left: auto;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.osd-profile {
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+  line-height: 1.15;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.osd-sub {
+  overflow: hidden;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 7.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.osd-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  margin-top: 3px;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  background: var(--rule);
+}
+
+.osd-stat {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  padding: 4px 6px;
+  background: #0d100c;
+  gap: 1px;
+}
+
+.osd-value {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 23px;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.055em;
+}
+
+.osd-value-low {
+  color: var(--muted);
+  font-size: 19px;
+}
+
+.osd-value-ms {
+  color: var(--muted);
+  font-size: 17px;
+}
+
+.osd-label {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 6.5px;
+  letter-spacing: 0.12em;
+}
+
+.osd-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 7.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.osd-source {
+  margin-left: auto;
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: 6.5px;
+  letter-spacing: 0.09em;
+}
+
+.osd-source-off {
+  color: var(--warn);
+}
+
+.osd-note {
+  overflow: hidden;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 7px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

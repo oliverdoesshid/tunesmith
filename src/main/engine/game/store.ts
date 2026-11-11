@@ -10,11 +10,11 @@
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { TuneSmithError } from '../../../shared/errors';
 import { formatGameIssues, gameProfileSchema } from '../../../shared/game/schema';
-import type { AppliedAdjustment, GameProfile } from '../../../shared/game/types';
+import type { AppliedAdjustment, GameNetworkSnapshot, GameProfile } from '../../../shared/game/types';
 
 export interface ProfileLoadError {
   file: string;
@@ -51,6 +51,8 @@ export interface StoredGameSession {
   gpu?: { exePath: string; previous: string | null };
   /** True while the 0.5 ms timer holder is (or should be) running for this session. */
   timerHeld?: boolean;
+  /** Prior TCP/adapter values for the game's server interface(s), captured before writing. */
+  network?: GameNetworkSnapshot;
   processes: TrackedProcess[];
   /** Affinity/priority changes on the game itself; they die with the process. */
   game: { affinityApplied: boolean; priorityApplied: boolean };
@@ -129,12 +131,35 @@ export class GameSessionStore {
     await mkdir(this.dir, { recursive: true });
     const target = this.fileFor(session.id);
     const temp = `${target}.tmp`;
-    await writeFile(temp, JSON.stringify(session, null, 2), 'utf8');
+
+    // This file is the durable-before-mutate record for suspended processes, GPU state and
+    // network captures. Fsync the complete temporary file before the rename, otherwise a
+    // power loss can leave a present-but-empty session that recovery cannot trust.
+    const handle = await open(temp, 'w');
+    try {
+      await handle.writeFile(JSON.stringify(session, null, 2), 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
 
     // Rename over an existing file is not atomic on Windows, so remove first and accept
     // the small window: the content is a snapshot of state we have not changed yet.
     await rm(target, { force: true });
     await rename(temp, target);
+
+    // Best effort, as in the journal: not every Windows filesystem permits opening a
+    // directory, but when it does this makes the rename itself durable.
+    try {
+      const directory = await open(this.dir, 'r');
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
+    } catch {
+      // The fsynced temp file and rename are still ordered.
+    }
   }
 
   async load(id: string): Promise<StoredGameSession | null> {

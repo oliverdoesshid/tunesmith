@@ -22,8 +22,14 @@ import { computeAffinityMask, isUsableMask, maskToHex } from '../../../shared/ga
 import { selectProfile, type RunningProcess } from '../../../shared/game/matcher';
 import { evaluateGameProfile, isBlocked, watchList, type GameFinding } from '../../../shared/game/policy';
 import { evaluateGuards, GUARD_DEFAULTS } from '../../../shared/game/telemetry';
+import { adaptGameProfile, describeMachine } from '../../../shared/game/adapt';
+import type { HardwareSpec } from '../../../shared/types';
 import type { AppliedAdjustment,
   GamePackageInfo,
+  GameProfileActions,
+  GameNetworkApplyResult,
+  GameNetworkSnapshot,
+  GameNetworkTarget,
   GuardOutcome,
   TelemetrySample,
   CpuTopology,
@@ -68,6 +74,11 @@ export interface GameAdapter {
   resolvePackage?(familyName: string): Promise<GamePackageInfo | null>;
   /** Optional hardware telemetry. When absent, guards are reported as unenforced. */
   readTelemetry?(): Promise<TelemetrySample>;
+  /** Optional network controls; absence records a skip, never a crash. */
+  inspectNetwork?(pid: number): Promise<GameNetworkTarget[]>;
+  captureNetwork?(targets: readonly GameNetworkTarget[]): Promise<GameNetworkSnapshot>;
+  applyNetwork?(snapshot: GameNetworkSnapshot, settings: NonNullable<GameProfileActions['network']>): Promise<GameNetworkApplyResult>;
+  restoreNetwork?(snapshot: GameNetworkSnapshot): Promise<string[]>;
 }
 
 /** The controller only starts, stops and replaces a watcher; tests provide a stub. */
@@ -93,10 +104,14 @@ export interface GameControllerDeps {
   sessions: SessionStore;
   pollMs?: number;
   now?: () => string;
+  /** Detected hardware, used to adapt a profile to this exact machine. Optional. */
+  hardware?: HardwareSpec;
   /** Millisecond clock for telemetry cadence and guard cooldowns; injectable for tests. */
   nowMs?: () => number;
   log?: (line: string) => void;
   onChange?: (status: GameStatus) => void;
+  /** Called after each processed watcher tick, for the out-of-process OSD. */
+  onSnapshot?: (snapshot: GameSnapshot, status: GameStatus) => void;
   createWatcher?: (options: WatcherOptions) => WatcherHandle;
 }
 
@@ -120,9 +135,11 @@ export class GameController {
   private readonly now: () => string;
   private readonly log: (line: string) => void;
   private onChange: (status: GameStatus) => void;
+  private onSnapshot: ((snapshot: GameSnapshot, status: GameStatus) => void) | null;
   private readonly createWatcher: NonNullable<GameControllerDeps['createWatcher']>;
 
   private profiles: GameProfile[] = [];
+  private hardware: HardwareSpec | null;
   private profilingError: string | null = null;
   private topology: CpuTopology | null = null;
 
@@ -160,9 +177,11 @@ export class GameController {
     this.sessions = deps.sessions;
     this.pollMs = clampPollMs(deps.pollMs ?? 2_000);
     this.now = deps.now ?? isoNow;
+    this.hardware = deps.hardware ?? null;
     this.clock = deps.nowMs ?? (() => Date.now());
     this.log = deps.log ?? (() => {});
     this.onChange = deps.onChange ?? (() => {});
+    this.onSnapshot = deps.onSnapshot ?? null;
     this.createWatcher =
       deps.createWatcher ??
       ((options) => new GameWatcher(options));
@@ -188,6 +207,11 @@ export class GameController {
       }
     }
     this.emit();
+  }
+
+  /** Called after first hardware detection so later activations adapt to this machine. */
+  setHardware(spec: HardwareSpec | null): void {
+    this.hardware = spec;
   }
 
   async reloadProfiles(): Promise<void> {
@@ -262,7 +286,15 @@ export class GameController {
   /** Serialised so a slow activation can never interleave with the next tick. */
   handleSnapshot(snapshot: GameSnapshot): void {
     this.queue = this.queue
-      .then(() => this.process(snapshot))
+      .then(async () => {
+        await this.process(snapshot);
+        try {
+          this.onSnapshot?.(snapshot, this.status());
+        } catch (error) {
+          // The OSD is a visual aid; a failure there must not stop the game engine.
+          this.log(`snapshot listener failed: ${describeError(error)}`);
+        }
+      })
       .catch((error) => {
         this.lastError = describeError(error);
         this.log(`tick failed: ${this.lastError}`);
@@ -386,10 +418,25 @@ export class GameController {
     await this.sessions.save(session);
     this.emit();
 
-    await this.applyGpuPreference(session, profile, process);
-    await this.applyMemoryFlush(session, profile);
-    await this.applyTimerHold(session, profile);
-    await this.applyProcessChanges(session, profile, process, snapshot, topology);
+    // Narrow the profile to this machine before touching anything. Every change is
+    // recorded in the session so the UI can explain why a rule did not run.
+    const machine = describeMachine(this.hardware, topology);
+    const adapted = adaptGameProfile(profile, machine);
+    for (const change of adapted.changes) {
+      this.record(session, {
+        kind: 'adaptation',
+        target: change.target,
+        detail: change.message,
+        ok: true,
+      });
+    }
+    if (adapted.changes.length > 0) await this.sessions.save(session);
+
+    await this.applyGpuPreference(session, adapted.actions, process);
+    await this.applyNetwork(session, adapted.actions, process);
+    await this.applyMemoryFlush(session, adapted.actions);
+    await this.applyTimerHold(session, adapted.actions);
+    await this.applyProcessChanges(session, adapted.actions, process, snapshot, topology);
 
     session.phase = 'active';
     await this.sessions.save(session);
@@ -493,8 +540,12 @@ export class GameController {
     if (!adjustment.ok) this.lastError = `${adjustment.target}: ${adjustment.error ?? 'failed'}`;
   }
 
-  private async applyGpuPreference(session: StoredGameSession, profile: GameProfile, process: RunningProcess): Promise<void> {
-    const preference = profile.actions.gpuPreference;
+  private async applyGpuPreference(
+    session: StoredGameSession,
+    actions: GameProfileActions,
+    process: RunningProcess,
+  ): Promise<void> {
+    const preference = actions.gpuPreference;
     if (preference === undefined) return;
 
     // Windows' per-app GPU preference is keyed by executable path and has no equivalent
@@ -548,8 +599,8 @@ export class GameController {
     await this.sessions.save(session);
   }
 
-  private async applyMemoryFlush(session: StoredGameSession, profile: GameProfile): Promise<void> {
-    if (profile.actions.flushStandbyMemory !== true) return;
+  private async applyMemoryFlush(session: StoredGameSession, actions: GameProfileActions): Promise<void> {
+    if (actions.flushStandbyMemory !== true) return;
 
     const ok = await this.adapter.purgeStandbyList();
     this.record(session, {
@@ -562,8 +613,73 @@ export class GameController {
     await this.sessions.save(session);
   }
 
-  private async applyTimerHold(session: StoredGameSession, profile: GameProfile): Promise<void> {
-    if (profile.actions.timerHold !== true) return;
+  private async applyNetwork(
+    session: StoredGameSession,
+    actions: GameProfileActions,
+    process: RunningProcess,
+  ): Promise<void> {
+    const settings = actions.network;
+    if (settings === undefined) return;
+
+    if (
+      this.adapter.inspectNetwork === undefined ||
+      this.adapter.captureNetwork === undefined ||
+      this.adapter.applyNetwork === undefined
+    ) {
+      this.record(session, {
+        kind: 'network',
+        target: 'game network route',
+        detail: 'Not applied',
+        ok: false,
+        error: 'Game network control is unavailable in this build.',
+      });
+      await this.sessions.save(session);
+      return;
+    }
+
+    try {
+      const targets = await this.adapter.inspectNetwork(process.pid);
+      if (targets.length === 0) {
+        this.record(session, {
+          kind: 'network',
+          target: 'game network route',
+          detail: 'No server interface found',
+          ok: false,
+          error:
+            'No established game server route was found. Connect to a match/server first; TCP tuning is not applied to idle interfaces.',
+        });
+        await this.sessions.save(session);
+        return;
+      }
+
+      // Capture first, persist, and only then mutate. A crash after the write therefore
+      // always leaves enough information to restore the exact prior values.
+      const snapshot = await this.adapter.captureNetwork(targets);
+      session.network = snapshot;
+      await this.sessions.save(session);
+
+      const result = await this.adapter.applyNetwork(snapshot, settings);
+      this.record(session, {
+        kind: 'network',
+        target: targets.map((target) => target.adapterName).join(', '),
+        detail: result.message,
+        ok: result.ok,
+        ...(result.ok ? {} : { error: result.message }),
+      });
+    } catch (error) {
+      this.record(session, {
+        kind: 'network',
+        target: 'game network route',
+        detail: 'Failed',
+        ok: false,
+        error: describeError(error),
+      });
+    }
+    await this.sessions.save(session);
+  }
+
+  private async applyTimerHold(session: StoredGameSession, actions: GameProfileActions): Promise<void> {
+    if (actions.timerHold !== true) return;
 
     if (this.adapter.startTimerHold === undefined) {
       this.record(session, {
@@ -601,14 +717,14 @@ export class GameController {
 
   private async applyProcessChanges(
     session: StoredGameSession,
-    profile: GameProfile,
+    actions: GameProfileActions,
     process: RunningProcess,
     snapshot: GameSnapshot,
     topology: CpuTopology,
   ): Promise<void> {
-    const wantsAffinity = profile.actions.affinity !== undefined || profile.actions.priority !== undefined;
+    const wantsAffinity = actions.affinity !== undefined || actions.priority !== undefined;
     if (wantsAffinity) {
-      const plan = profile.actions.affinity ?? { strategy: 'all-cores' as const };
+      const plan = actions.affinity ?? { strategy: 'all-cores' as const };
       const selection = computeAffinityMask(topology, plan);
 
       if (!isUsableMask(selection, topology)) {
@@ -618,17 +734,17 @@ export class GameController {
           await this.adapter.applyAffinityAndPriority(
             process.pid,
             maskToHex(selection.mask),
-            profile.actions.priority ?? null,
+            actions.priority ?? null,
             selection.groups,
           );
           session.game.affinityApplied = true;
-          session.game.priorityApplied = profile.actions.priority !== undefined;
+          session.game.priorityApplied = actions.priority !== undefined;
           this.record(session, { kind: 'affinity', target: process.exe, detail: selection.reason, ok: true });
-          if (profile.actions.priority !== undefined) {
+          if (actions.priority !== undefined) {
             this.record(session, {
               kind: 'priority',
               target: process.exe,
-              detail: `Priority ${profile.actions.priority}`,
+              detail: `Priority ${actions.priority}`,
               ok: true,
             });
           }
@@ -639,7 +755,7 @@ export class GameController {
       await this.sessions.save(session);
     }
 
-    const rules = profile.actions.backgroundRules ?? [];
+    const rules = actions.backgroundRules ?? [];
     if (rules.length === 0) return;
 
     const planned: { tracked: TrackedProcess; rulePriority: PriorityClass | null }[] = [];
@@ -851,6 +967,18 @@ export class GameController {
       }
     }
 
+    if (session.network !== undefined) {
+      if (this.adapter.restoreNetwork === undefined) {
+        problems.push('network: restore is unavailable in this build');
+      } else {
+        try {
+          problems.push(...(await this.adapter.restoreNetwork(session.network)));
+        } catch (error) {
+          problems.push(`network restore failed: ${describeError(error)}`);
+        }
+      }
+    }
+
     session.restoredAt = this.now();
     session.endedAt = session.endedAt ?? session.restoredAt;
     session.phase = 'restored';
@@ -944,6 +1072,11 @@ export class GameController {
   /** Replaces the status listener; the main process points this at the window. */
   setOnChange(listener: (status: GameStatus) => void): void {
     this.onChange = listener;
+  }
+
+  /** The overlay needs foreground-window geometry, which is not part of GameStatus. */
+  setOnSnapshot(listener: ((snapshot: GameSnapshot, status: GameStatus) => void) | null): void {
+    this.onSnapshot = listener;
   }
 
   hasActiveSession(): boolean {

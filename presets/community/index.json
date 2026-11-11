@@ -6,25 +6,25 @@
       "file": "competitive-fps-low-latency.json",
       "id": "competitive-fps-low-latency",
       "version": "1.0.0",
-      "sha256": "520615a8d9a84596143af25df7118125aee930bfa219b9cba2352844a1ea8980"
+      "sha256": "992193f248a879553a445b8a409195d1a3fe99ef324ec7b8b5b3a748b69ef911"
     },
     {
       "file": "hdd-latency-relief.json",
       "id": "hdd-latency-relief",
       "version": "1.0.0",
-      "sha256": "57438c8f157014ea04ef81416b25976f5392c96ab107646ffa581ee57a74f168"
+      "sha256": "a0da278b6ed694adc4f25f74d0d46bbf70b97d4feafdf70cb77118058cd7cea0"
     },
     {
       "file": "ultra-low-latency-aggressive.json",
       "id": "ultra-low-latency-aggressive",
       "version": "1.0.0",
-      "sha256": "2925486184ffd8af353d95362fea18cb1e4fc6d5adc8ad0c7a8f1f4e2344941f"
+      "sha256": "74455ca22ed18999d8afb9d6f99e2b268e70040c3d7dce38583266e28f75fae3"
     },
     {
       "file": "workstation-throughput.json",
       "id": "workstation-throughput",
       "version": "1.0.0",
-      "sha256": "24c10008fbce56a54e43c4de4104374572cc8aaaed1b6c13cafe08e47b2f0790"
+      "sha256": "2f1ceda8b330c0ba1075c7e29b37a780545a91a7a1ab31d872dabbb6148caefc"
     }
   ]
 }

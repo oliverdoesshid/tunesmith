@@ -8,11 +8,13 @@
 import type { ApplyRequest, ElevationResult, PresetSummary, TuneSmithApi } from '../../shared/ipc';
 import type { CompiledPlan } from '../../shared/preset/compiler';
 import { compilePlan } from '../../shared/preset/compiler';
+import { buildServiceDependencyGraph, type ServiceDependencyAction, type ServiceRegistryEntry } from '../../shared/service-graph';
 import { formatZodIssues, presetSchema, type Preset } from '../../shared/preset/schema';
 import type {
   AppInfo,
   ApplyOutcome,
   EngineProgress,
+  MemorySnapshot,
   PreflightReport,
   RollbackReport,
   SessionSummary,
@@ -21,8 +23,13 @@ import type { HardwareSpec } from '../../shared/types';
 import { describeActions } from '../../shared/game/describe';
 import { evaluateGameProfile } from '../../shared/game/policy';
 import { gameProfileSchema } from '../../shared/game/schema';
-import type { GameProfile, GameProfileSummary, GameStatus } from '../../shared/game/types';
+import type { ArtworkRequestItem, GameArtwork } from '../../shared/game/artwork';
+import type { OsdStatus } from '../../shared/game/osd';
+import type { GameLibraryScanResult, GameProfile, GameProfileSummary, GameStatus } from '../../shared/game/types';
+import { attachProfileMatches, installedProfilePaths } from '../../shared/game/library';
 import type { MarketStatus } from '../../shared/market/types';
+import type { HealthFlushResult, HealthStatus } from '../../shared/health/types';
+import { idlePostApplyStatus, type PostApplyStatus } from '../../shared/post-apply';
 
 import cyberpunkGame from '../../../presets/games/cyberpunk-2077.json';
 import esportsGame from '../../../presets/games/esports-low-latency.json';
@@ -83,6 +90,18 @@ const MOCK_SPEC: HardwareSpec = {
   warnings: [],
 };
 
+/** Synthetic SCM rows for the browser preview; the real graph is read from PowerShell. */
+const MOCK_SERVICE_REGISTRY: ServiceRegistryEntry[] = [
+  { name: 'DcomLaunch', displayName: 'DCOM Server Process Launcher', start: 'Auto', dependsOn: [], dependsOnGroups: [] },
+  { name: 'RpcSs', displayName: 'Remote Procedure Call (RPC)', start: 'Auto', dependsOn: ['DcomLaunch'], dependsOnGroups: [] },
+  { name: 'DiagTrack', displayName: 'Connected User Experiences and Telemetry', start: 'Manual', dependsOn: ['RpcSs'], dependsOnGroups: [] },
+  { name: 'WpnService', displayName: 'Windows Push Notifications System Service', start: 'Auto', dependsOn: ['RpcSs'], dependsOnGroups: [] },
+  { name: 'EventLog', displayName: 'Windows Event Log', start: 'Auto', dependsOn: ['RpcSs'], dependsOnGroups: [] },
+  { name: 'SysMain', displayName: 'SysMain', start: 'Auto', dependsOn: ['RpcSs', 'FileInfo'], dependsOnGroups: [] },
+  { name: 'FileInfo', displayName: 'FileInfo', start: 'Boot', dependsOn: [], dependsOnGroups: [] },
+  { name: 'WSearch', displayName: 'Windows Search', start: 'Auto', dependsOn: ['RpcSs'], dependsOnGroups: [] },
+];
+
 function loadPresets(): Preset[] {
   const raw: unknown[] = [competitiveFps, workstation, hddRelief, ultraLowLatency];
   const out: Preset[] = [];
@@ -130,6 +149,69 @@ function loadGameProfiles(): GameProfile[] {
   return parsed;
 }
 
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function svgDataUrl(width: number, height: number, body: string): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${String(width)}" height="${String(height)}" viewBox="0 0 ${String(width)} ${String(height)}">${body}</svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+/** Locally generated placeholder art, so the browser preview can exercise the real UI. */
+function mockArtwork(key: string, title: string): GameArtwork {
+  const hue = [...key].reduce((total, char) => total + char.charCodeAt(0), 0) % 360;
+  const base = `hsl(${String(hue)} 60% 28%)`;
+  const accent = `hsl(${String((hue + 55) % 360)} 78% 58%)`;
+  const initials =
+    title
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((word) => word[0]?.toUpperCase() ?? '')
+      .join('') || '?';
+  const safeTitle = escapeXml(title.slice(0, 34));
+  const safeInitials = escapeXml(initials);
+
+  const grid = svgDataUrl(
+    600,
+    900,
+    `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${base}"/><stop offset="1" stop-color="#0b1015"/></linearGradient></defs>` +
+      `<rect width="600" height="900" fill="url(#g)"/><circle cx="500" cy="160" r="190" fill="${accent}" opacity="0.22"/>` +
+      `<text x="48" y="740" fill="#e8f0f7" font-family="Segoe UI, sans-serif" font-size="150" font-weight="700">${safeInitials}</text>` +
+      `<text x="48" y="820" fill="#8fa3b3" font-family="Segoe UI, sans-serif" font-size="30">${safeTitle}</text>`,
+  );
+  const hero = svgDataUrl(
+    1920,
+    620,
+    `<defs><linearGradient id="h" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#0b1015"/><stop offset="0.55" stop-color="${base}"/><stop offset="1" stop-color="${accent}"/></linearGradient></defs>` +
+      `<rect width="1920" height="620" fill="url(#h)"/><circle cx="1560" cy="120" r="320" fill="#5eead4" opacity="0.16"/>` +
+      `<text x="120" y="360" fill="#e8f0f7" font-family="Segoe UI, sans-serif" font-size="92" font-weight="700">${safeTitle}</text>`,
+  );
+  const logo = svgDataUrl(
+    600,
+    200,
+    `<text x="4" y="140" fill="#e8f0f7" font-family="Segoe UI, sans-serif" font-size="88" font-weight="800">${safeTitle}</text>`,
+  );
+
+  return {
+    key,
+    title,
+    status: 'ok',
+    steamGridDbId: null,
+    matchedTitle: title,
+    grid: { url: grid, width: 600, height: 900 },
+    hero: { url: hero, width: 1920, height: 620 },
+    logo: { url: logo, width: 600, height: 200 },
+    message: null,
+  };
+}
+
 export function createMockBridge(): TuneSmithApi {
   const presets = loadPresets();
   const gameProfiles = loadGameProfiles();
@@ -137,6 +219,24 @@ export function createMockBridge(): TuneSmithApi {
   let sessions: SessionSummary[] = [];
 
   const gameListeners = new Set<(status: GameStatus) => void>();
+  const healthListeners = new Set<(status: HealthStatus) => void>();
+  const postApplyListeners = new Set<(status: PostApplyStatus) => void>();
+  let postApplyStatus: PostApplyStatus = idlePostApplyStatus();
+  let osdEnabled = true;
+
+  const setPostApplyStatus = (next: PostApplyStatus): PostApplyStatus => {
+    postApplyStatus = next;
+    for (const listener of postApplyListeners) listener(next);
+    return next;
+  };
+
+  const osdStatus = (): OsdStatus => ({
+    enabled: osdEnabled,
+    visible: false,
+    message: osdEnabled
+      ? 'Preview: the OSD appears over an active game session in the desktop app.'
+      : 'Performance OSD is off.',
+  });
   let marketStatus: MarketStatus = {
     configured: false,
     source: null,
@@ -182,6 +282,67 @@ export function createMockBridge(): TuneSmithApi {
     return next;
   };
 
+  const libraryScan: GameLibraryScanResult = attachProfileMatches(
+    {
+      scannedAt: '2026-01-01T00:00:00.000Z',
+      errors: [{ source: 'gog', message: 'GOG registry access is unavailable in the browser preview.' }],
+      games: [
+        {
+          id: 'steam:1091500',
+          name: 'Cyberpunk 2077',
+          source: 'steam',
+          appId: '1091500',
+          installDir: 'D:\\SteamLibrary\\steamapps\\common\\Cyberpunk 2077',
+          executables: [
+            {
+              name: 'Cyberpunk2077.exe',
+              path: 'D:\\SteamLibrary\\steamapps\\common\\Cyberpunk 2077\\bin\\x64\\Cyberpunk2077.exe',
+            },
+          ],
+          executablePath:
+            'D:\\SteamLibrary\\steamapps\\common\\Cyberpunk 2077\\bin\\x64\\Cyberpunk2077.exe',
+          packageFamilyName: null,
+          profileIds: [],
+        },
+        {
+          id: 'steam:730',
+          name: 'Counter-Strike 2',
+          source: 'steam',
+          appId: '730',
+          installDir: 'D:\\SteamLibrary\\steamapps\\common\\Counter-Strike Global Offensive',
+          executables: [
+            {
+              name: 'cs2.exe',
+              path: 'D:\\SteamLibrary\\steamapps\\common\\Counter-Strike Global Offensive\\game\\bin\\win64\\cs2.exe',
+            },
+          ],
+          executablePath:
+            'D:\\SteamLibrary\\steamapps\\common\\Counter-Strike Global Offensive\\game\\bin\\win64\\cs2.exe',
+          packageFamilyName: null,
+          profileIds: [],
+        },
+        {
+          id: 'epic:AlanWake2',
+          name: 'Alan Wake 2',
+          source: 'epic',
+          appId: 'AlanWake2',
+          installDir: 'C:\\Program Files\\Epic Games\\AlanWake2',
+          executables: [
+            {
+              name: 'AlanWake2.exe',
+              path: 'C:\\Program Files\\Epic Games\\AlanWake2\\AlanWake2.exe',
+            },
+          ],
+          executablePath: 'C:\\Program Files\\Epic Games\\AlanWake2\\AlanWake2.exe',
+          packageFamilyName: null,
+          profileIds: [],
+        },
+      ],
+    },
+    gameProfiles,
+  );
+  const installedProfiles = installedProfilePaths(libraryScan, gameProfiles);
+
   const gameSummaries: GameProfileSummary[] = gameProfiles.map((profile) => {
     const findings = evaluateGameProfile(profile, gameStatus.topology);
     return {
@@ -196,6 +357,8 @@ export function createMockBridge(): TuneSmithApi {
       findings: findings.map((finding) => finding.message),
       actions: describeActions(profile),
       notes: profile.notes ?? [],
+      installed: installedProfiles.has(profile.id),
+      detectedPath: installedProfiles.get(profile.id) ?? null,
     };
   });
 
@@ -219,6 +382,37 @@ export function createMockBridge(): TuneSmithApi {
     devMode: true,
     sessionsDir: 'C:\\Users\\you\\AppData\\Roaming\\TuneSmith\\sessions',
     presetCount: presets.length,
+  };
+
+  const pinnedHealthPreset = presets.find((preset) => preset.id === 'competitive-fps-low-latency') ?? presets[0] ?? null;
+  let healthStatus: HealthStatus = {
+    watchdog: 'healthy',
+    lastCheckAt: '2026-01-01T00:05:00.000Z',
+    baselineCapturedAt: '2026-01-01T00:00:00.000Z',
+    os: { build: '26100', revision: 1742, displayVersion: '24H2' },
+    signals: [
+      {
+        id: 'servicing-rebootPending',
+        kind: 'servicing',
+        severity: 'warning',
+        title: 'Windows servicing state changed',
+        detail: 'New: component servicing restart pending. A cumulative update may overwrite tuning values.',
+      },
+    ],
+    warnings: [],
+    error: null,
+    pinnedPresetId: pinnedHealthPreset?.id ?? null,
+    pinnedPreset:
+      pinnedHealthPreset === null
+        ? null
+        : { id: pinnedHealthPreset.id, name: pinnedHealthPreset.name, version: pinnedHealthPreset.version },
+    pinnedPresetMissing: false,
+    journals: { stale: 2, needingRollback: 0, staleAfterDays: 7 },
+  };
+  const setHealthStatus = (next: HealthStatus): HealthStatus => {
+    healthStatus = next;
+    for (const listener of healthListeners) listener(next);
+    return next;
   };
 
   const preflight: PreflightReport = {
@@ -248,6 +442,14 @@ export function createMockBridge(): TuneSmithApi {
 
     app: {
       info: async () => info,
+      memory: async (): Promise<MemorySnapshot> => ({
+        totalBytes: MOCK_SPEC.memory.totalBytes,
+        availableBytes: 14_400_000_000,
+        usedBytes: MOCK_SPEC.memory.totalBytes - 14_400_000_000,
+        usedPercent: 58,
+        pressure: 'optimal',
+        sampledAt: new Date().toISOString(),
+      }),
       requestElevation: async (): Promise<ElevationResult> => ({
         relaunching: false,
         detail: 'Elevation is unavailable in the browser preview.',
@@ -261,6 +463,14 @@ export function createMockBridge(): TuneSmithApi {
     presets: {
       list: async () => presets.map((p) => summarize(p, MOCK_SPEC)),
       plan: async (presetId: string) => compile(presetId),
+      serviceDependencies: async (presetId: string) => {
+        const plan = compile(presetId);
+        const actions: ServiceDependencyAction[] = [];
+        for (const step of plan.steps) {
+          if (step.action.kind === 'service') actions.push(step.action);
+        }
+        return buildServiceDependencyGraph(MOCK_SERVICE_REGISTRY, actions);
+      },
       openFolder: async () => undefined,
     },
 
@@ -277,6 +487,46 @@ export function createMockBridge(): TuneSmithApi {
 
     safety: {
       preflight: async () => preflight,
+    },
+
+    health: {
+      status: async () => healthStatus,
+      check: async () => setHealthStatus({ ...healthStatus, lastCheckAt: new Date().toISOString() }),
+      acknowledge: async () =>
+        setHealthStatus({
+          ...healthStatus,
+          signals: [],
+          baselineCapturedAt: new Date().toISOString(),
+          error: null,
+        }),
+      pin: async (presetId: string | null) => {
+        if (presetId === null) {
+          return setHealthStatus({ ...healthStatus, pinnedPresetId: null, pinnedPreset: null, pinnedPresetMissing: false });
+        }
+        const selected = presets.find((preset) => preset.id === presetId);
+        if (selected === undefined) throw new Error(`Preset "${presetId}" is not installed.`);
+        return setHealthStatus({
+          ...healthStatus,
+          pinnedPresetId: selected.id,
+          pinnedPreset: { id: selected.id, name: selected.name, version: selected.version },
+          pinnedPresetMissing: false,
+        });
+      },
+      flushJournals: async (): Promise<HealthFlushResult> => {
+        const flushed = healthStatus.journals.stale > 0 ? ['preview-stale-session'] : [];
+        setHealthStatus({ ...healthStatus, journals: { ...healthStatus.journals, stale: 0 } });
+        return {
+          flushed,
+          kept: [],
+          message: flushed.length === 0 ? 'No stale journals were old enough to remove.' : 'Removed 1 stale journal(s) (preview only).',
+        };
+      },
+      onStatus: (listener) => {
+        healthListeners.add(listener);
+        return () => {
+          healthListeners.delete(listener);
+        };
+      },
     },
 
     engine: {
@@ -314,6 +564,35 @@ export function createMockBridge(): TuneSmithApi {
         };
         sessions = [session, ...sessions];
 
+        if (plan.risk === 'aggressive') {
+          const started = Date.now();
+          setPostApplyStatus({
+            phase: 'monitoring',
+            active: true,
+            sessionId: session.id,
+            presetId: plan.presetId,
+            presetName: plan.presetName,
+            startedAt: new Date(started).toISOString(),
+            endsAt: new Date(started + 5 * 60_000).toISOString(),
+            remainingMs: 5 * 60_000,
+            sampleCount: 1,
+            sample: {
+              at: new Date(started).toISOString(),
+              cpuTempC: 64,
+              gpuTempC: 61,
+              cpuTempSource: 'libre-hardware-monitor',
+              gpuTempSource: 'nvidia-smi',
+              dpcPercent: 0.9,
+              dpcSource: 'cim-perf-counter',
+            },
+            trip: null,
+            rollback: null,
+            message: 'Preview only: stability monitoring is simulated and will not trip.',
+          });
+        } else {
+          setPostApplyStatus(idlePostApplyStatus());
+        }
+
         emit({ phase: 'done', message: `${plan.presetName} applied.` });
 
         return {
@@ -332,6 +611,7 @@ export function createMockBridge(): TuneSmithApi {
       sessions: async () => sessions,
 
       rollback: async (sessionId: string): Promise<RollbackReport> => {
+        setPostApplyStatus(idlePostApplyStatus());
         const session = sessions.find((s) => s.id === sessionId);
         const restored = session?.pendingRollback ?? 0;
         sessions = sessions.map((s) =>
@@ -349,6 +629,7 @@ export function createMockBridge(): TuneSmithApi {
       },
 
       restoreDefaults: async (): Promise<RollbackReport[]> => {
+        setPostApplyStatus(idlePostApplyStatus());
         const pending = sessions.filter((s) => s.pendingRollback > 0);
         sessions = sessions.map((s) =>
           s.pendingRollback > 0 ? { ...s, status: 'rolled-back', pendingRollback: 0 } : s,
@@ -363,6 +644,13 @@ export function createMockBridge(): TuneSmithApi {
           message: `Restored ${s.pendingRollback} change(s).`,
         }));
       },
+      postApply: async () => postApplyStatus,
+      onPostApply: (listener) => {
+        postApplyListeners.add(listener);
+        return () => {
+          postApplyListeners.delete(listener);
+        };
+      },
     },
 
     game: {
@@ -370,7 +658,32 @@ export function createMockBridge(): TuneSmithApi {
       setWatching: async (enabled: boolean) =>
         setGameStatus({ ...gameStatus, watching: enabled, watcherHealthy: false }),
       profiles: async () => gameSummaries,
+      libraries: async () => libraryScan,
+      artwork: async (items: ArtworkRequestItem[]) => ({
+        configured: true,
+        message: null,
+        items: items.map((item) => mockArtwork(item.key, item.title)),
+      }),
+      openFolder: async () => undefined,
+      launch: async (gameId: string) => {
+        const target = libraryScan.games.find((entry) => entry.id === gameId);
+        if (target === undefined) throw new Error('That game is not in the preview library.');
+        if (target.executablePath === null) throw new Error('No executable was detected for this preview title.');
+        setGameStatus({ ...gameStatus, watching: true });
+        return {
+          gameId,
+          launched: true,
+          watching: true,
+          executablePath: target.executablePath,
+          message: `Preview only: ${target.name} was not started. Game mode is armed.`,
+        };
+      },
       stop: async () => setGameStatus({ ...gameStatus, active: null, phase: 'idle' }),
+      osd: async () => osdStatus(),
+      setOsd: async (enabled: boolean) => {
+        osdEnabled = enabled;
+        return osdStatus();
+      },
       onStatus: (listener) => {
         gameListeners.add(listener);
         return () => {

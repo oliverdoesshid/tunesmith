@@ -2,11 +2,13 @@
  * Marketplace orchestration: catalog cache, verified views, installs and telemetry.
  *
  * This class never trusts the renderer: `install` re-checks the id against the verified
- * catalog it fetched itself, and installs only the canonical bytes whose Ed25519
- * signature already verified. It is also the only writer of telemetry, gated on consent.
+ * catalog it fetched itself, re-downloads the catalog, recomputes the payload SHA-256 and
+ * verifies the entry's Ed25519 signature before writing anything. It is also the only
+ * writer of telemetry, gated on consent.
  */
 import { describeError, TuneSmithError } from '../../shared/errors';
 import { canonicalJson } from '../../shared/market/canonical';
+import { entrySigningPayload } from '../../shared/market/schema';
 import { scoreEntry } from '../../shared/market/score';
 import type { TelemetryKind } from '../../shared/market/telemetry';
 import type {
@@ -15,9 +17,13 @@ import type {
   MarketStatus,
   TelemetryStats,
 } from '../../shared/market/types';
+import { compilePlan } from '../../shared/preset/compiler';
+import type { Preset } from '../../shared/preset/schema';
+import type { HardwareSpec } from '../../shared/types';
 import { fetchVerifiedCatalog, type CatalogResult, type FetchLike } from './client';
 import { installVerifiedPreset } from './install';
 import { TelemetryStore } from './telemetry-store';
+import { sha256Hex, verifyEd25519 } from './verify';
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -32,7 +38,10 @@ export interface MarketplaceSettings {
 
 export interface MarketplaceDeps extends MarketplaceSettings {
   listInstalled(): Promise<Map<string, string>>;
-  onInstalled(): void;
+  /** Called after verified bytes are on disk; awaited so the re-index is immediate. */
+  onInstalled(): void | Promise<void>;
+  /** Local machine, used to badge each entry with its compatibility. */
+  getSpec?: () => Promise<HardwareSpec>;
   fetchImpl?: FetchLike;
 }
 
@@ -42,6 +51,40 @@ function displaySource(url: string): string {
     return `${parsed.origin}${parsed.pathname}`;
   } catch {
     return url;
+  }
+}
+
+/**
+ * Compatibility is computed here, in main, from the full signed preset. The renderer
+ * only receives the verdict and reasons, never the authority to decide what fits.
+ */
+function compatibilityFor(
+  preset: Preset,
+  spec: HardwareSpec | null,
+): MarketEntryView['compatibility'] {
+  if (spec === null) {
+    return {
+      applicable: false,
+      score: 0,
+      blocked: false,
+      reasons: ['Hardware detection has not completed yet.'],
+    };
+  }
+  try {
+    const plan = compilePlan(preset, spec);
+    return {
+      applicable: plan.compatibility.applicable && !plan.blocked,
+      score: plan.compatibility.score,
+      blocked: plan.blocked,
+      reasons: plan.compatibility.reasons,
+    };
+  } catch {
+    return {
+      applicable: false,
+      score: 0,
+      blocked: false,
+      reasons: ['This preset could not be evaluated against this machine.'],
+    };
   }
 }
 
@@ -74,6 +117,15 @@ export class MarketplaceService {
       const result = await this.loadCatalog(force);
       const stats = await this.telemetry.stats();
 
+      let spec: HardwareSpec | null = null;
+      if (this.deps.getSpec !== undefined) {
+        try {
+          spec = await this.deps.getSpec();
+        } catch {
+          spec = null;
+        }
+      }
+
       const entries: MarketEntryView[] = result.entries.map(({ entry }) => {
         const id = entry.preset.id;
         const installedVersion = installed.get(id) ?? null;
@@ -90,6 +142,7 @@ export class MarketplaceService {
           publishedAt: entry.publishedAt,
           ratings: entry.ratings,
           safety: scoreEntry(entry, stats.get(id) ?? null),
+          compatibility: compatibilityFor(entry.preset, spec),
           stats:
             stats.get(id) ?? {
               applies: 0,
@@ -131,23 +184,36 @@ export class MarketplaceService {
   }
 
   async install(presetId: string): Promise<InstallResult> {
-    const result = await this.loadCatalog(false);
+    // Install always refetches instead of trusting the cached view: the bytes written are
+    // the bytes verified in this call, not bytes that were verified minutes ago.
+    const result = await this.loadCatalog(true);
     const found = result.entries.find((candidate) => candidate.entry.preset.id === presetId);
     if (found === undefined) {
       throw new TuneSmithError('unavailable', 'That preset is not in the verified catalog.');
     }
 
-    // Re-verify the canonical form at the last moment; `installVerifiedPreset` checks it again.
-    if (canonicalJson(found.entry.preset) !== found.canonical) {
-      throw new TuneSmithError('integrity-failed', 'The preset changed after verification.');
+    const canonical = canonicalJson(found.entry.preset);
+    const digest = sha256Hex(canonical);
+    if (canonical !== found.canonical || digest !== found.entry.sha256) {
+      throw new TuneSmithError(
+        'integrity-failed',
+        'The preset payload does not match its published SHA-256 digest.',
+      );
     }
 
-    const written = await installVerifiedPreset(
-      found.entry,
-      found.canonical,
-      this.deps.installDir,
-    );
-    this.deps.onInstalled();
+    const pem = this.deps.keyRing.get(found.entry.signature.keyId);
+    if (
+      pem === undefined ||
+      !verifyEd25519(entrySigningPayload(digest), found.entry.signature.sig, pem)
+    ) {
+      throw new TuneSmithError(
+        'integrity-failed',
+        'The preset signature is missing or does not verify. Nothing was installed.',
+      );
+    }
+
+    const written = await installVerifiedPreset(found.entry, canonical, this.deps.installDir);
+    await this.deps.onInstalled();
 
     return {
       presetId: found.entry.preset.id,

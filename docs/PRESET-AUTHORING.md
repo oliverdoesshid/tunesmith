@@ -148,6 +148,10 @@ Rules:
 - At most **8** services may be `Disabled` per profile.
 - Protected services are hard-blocked regardless of risk tier (Defender, firewall, RPC, EventLog,
   audio, Windows Update, SCM/WMI, …). See `PROTECTED_SERVICES` in `policy.ts`.
+- Before apply, the plan dialog reads `DependOnService` / `DependOnGroup` and shows the
+  target's requirements, its transitive dependents, and any protected service in that cascade.
+  The tree is bounded and read-only; it never expands a group into guessed services and does
+  not replace the policy block or apply-time capture.
 
 ### `priorities`
 
@@ -182,9 +186,23 @@ behaviour is never changed.
 | `processor-min-state` | 0-100 | percent |
 | `processor-max-state` | 0-100 | percent |
 | `core-parking-min-cores` | 0-100 | percent of cores kept unparked |
+| `core-parking-max-cores` | 0-100 | percent cap on unparked cores; pair with min 100 to keep every core available |
+| `energy-performance-preference` | 0-100 | EPP, displayed with its hex value; 0 = performance, 100 = energy savings |
 | `usb-selective-suspend` | 0-1 | 0 = disabled |
 | `pcie-link-state` | 0-2 | 0 = off |
 | `disk-idle-timeout` | 0-86400 | seconds, 0 = never |
+
+EPP is a firmware/HWP frequency-energy hint, **not thread placement**. Use affinity for
+P/E-core placement. Core parking is likewise system-wide. On Windows 11, EPP and
+core-parking maximum are hidden from `powercfg -query`; the engine captures their effective
+AC values through `PowerReadACValue` and still writes through `powercfg`. If that API cannot
+read the value, the step is refused rather than mutated blindly. No BCD or registry unhide is
+performed.
+
+The value restored is the effective AC value. If the active scheme had no explicit override
+for a hidden setting, rollback writes that same value as an explicit override instead of
+deleting the hidden power-scheme key. Behaviour is preserved, but the registry shape is not
+byte-identical to its pre-apply shape; this exception applies only to hidden power settings.
 
 ### `deviceInterrupts`, `irqPriorities`, `network` (aggressive only)
 
@@ -253,7 +271,9 @@ Hidden settings cannot be captured, and the engine refuses to write anything it 
 read. So:
 
 1. On a real machine: `powercfg -query SCHEME_CURRENT <subgroup>` and confirm the setting is
-   listed with a `Current AC Power Setting Index`.
+   listed with a `Current AC Power Setting Index`. If it is hidden, verify that
+   `PowerReadACValue` returns a `REG_DWORD` value (the existing EPP/core-parking max entries
+   are examples), and mark it `readVia: 'power-api'`; do not unhide it.
 2. Add the id to `POWER_SETTING_IDS` and the metadata to `POWER_SETTINGS` in
    `src/shared/power.ts`, with the subgroup, GUID, range and a human note.
 3. Run the tests — the schema, policy ranges and UI labels all derive from that table.

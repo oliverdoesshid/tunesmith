@@ -13,8 +13,7 @@
  * This module deliberately has no Electron dependency: `root` is injected so tests can
  * drive it against a temp directory.
  */
-import { closeSync, openSync, writeSync, fsyncSync } from 'node:fs';
-import { mkdir, open, readFile, readdir, rename, writeFile, type FileHandle } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, rm, writeFile, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   JournalEntry,
@@ -29,8 +28,32 @@ const JOURNAL = 'journal.jsonl';
 
 async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
   const tmp = `${file}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  const payload = `${JSON.stringify(value, null, 2)}\n`;
+
+  // fsync the temporary file before the rename. Without this a crash could leave a
+  // renamed but empty/partial manifest, which recovery would misread as no session.
+  const handle = await open(tmp, 'w');
+  try {
+    await handle.writeFile(payload, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
   await rename(tmp, file);
+
+  // Also make the directory entry durable where the platform permits it. Windows can
+  // refuse to open a directory as a file; the rename is still atomic, so this is best
+  // effort rather than a reason to fail the session.
+  try {
+    const directory = await open(path.dirname(file), 'r');
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  } catch {
+    // Not supported on every filesystem; the fsynced temp + atomic rename remain.
+  }
 }
 
 /** Merge append-only records into the current view of each step. */
@@ -159,6 +182,87 @@ export class JournalStore {
     return manifests.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
+  /** Count old, fully finished journals and journals that still need recovery. */
+  async journalHealth(nowMs: number, olderThanMs: number): Promise<{ stale: number; needingRollback: number }> {
+    const sessions = await this.summaries();
+    return {
+      stale: sessions.filter((session) => staleJournalReason(session, nowMs, olderThanMs) === null).length,
+      needingRollback: sessions.filter((session) => session.pendingRollback > 0).length,
+    };
+  }
+
+  /**
+   * Remove only journals that are provably no longer protecting a mutation: finished,
+   * not interrupted, no pending rollback, and older than the threshold. A session with
+   * any unrestored entry is retained even if it is ancient. Directory names are used as
+   * the deletion target; a manifest whose id does not match its directory is skipped.
+   */
+  async flushStale(nowMs: number, olderThanMs: number): Promise<JournalFlushResult> {
+    const flushed: string[] = [];
+    const kept: { id: string; reason: string }[] = [];
+
+    let entries: import('node:fs').Dirent[];
+    try {
+      entries = await readdir(this.root, { withFileTypes: true });
+    } catch {
+      return { flushed, kept };
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const id = entry.name;
+      if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) {
+        kept.push({ id, reason: 'invalid session directory name' });
+        continue;
+      }
+
+      let manifest: SessionManifest;
+      try {
+        manifest = await this.readManifest(id);
+      } catch {
+        kept.push({ id, reason: 'unreadable manifest' });
+        continue;
+      }
+      if (manifest.id !== id) {
+        kept.push({ id, reason: 'manifest id does not match its directory' });
+        continue;
+      }
+
+      const records = await this.entries(id);
+      const pendingRollback = records.filter((record) => isRestorable(record) && record.rolledBack !== true).length;
+      const summary: SessionSummary = {
+        id,
+        createdAt: manifest.createdAt,
+        finishedAt: manifest.finishedAt,
+        presetId: manifest.presetId,
+        presetName: manifest.presetName,
+        presetVersion: manifest.presetVersion,
+        presetRisk: manifest.presetRisk,
+        signature: manifest.signature,
+        status: manifest.status,
+        restorePoint: manifest.restorePoint,
+        stepCount: manifest.stepCount,
+        pendingRollback,
+        interrupted: manifest.status === 'applying',
+      };
+      const reason = staleJournalReason(summary, nowMs, olderThanMs);
+      if (reason !== null) {
+        kept.push({ id, reason });
+        continue;
+      }
+
+      try {
+        await this.close(id);
+        await rm(this.sessionDir(id), { recursive: true, force: true });
+        flushed.push(id);
+      } catch (err) {
+        kept.push({ id, reason: `delete failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
+
+    return { flushed, kept };
+  }
+
   async summaries(): Promise<SessionSummary[]> {
     const manifests = await this.listManifests();
     const out: SessionSummary[] = [];
@@ -216,13 +320,14 @@ export class JournalStore {
     try {
       await mkdir(this.root, { recursive: true });
       const probe = path.join(this.root, '.write-probe');
-      await writeFile(probe, 'ok', 'utf8');
-      const fd = openSync(probe, 'r+');
+      // Keep the probe fully asynchronous: preflight runs while the window is live, and a
+      // synchronous open/write/fsync pair here can stall the renderer for a frame.
+      const handle = await open(probe, 'w');
       try {
-        writeSync(fd, 'ok');
-        fsyncSync(fd);
+        await handle.writeFile('ok', 'utf8');
+        await handle.sync();
       } finally {
-        closeSync(fd);
+        await handle.close();
       }
       await rename(probe, path.join(this.root, '.write-probe-ok'));
       return { ok: true, detail: this.root };
@@ -261,4 +366,27 @@ export function newSessionManifest(input: {
 
 export function statusNeedsRollback(status: SessionStatus): boolean {
   return status === 'applying' || status === 'applied' || status === 'rollback-failed';
+}
+
+export interface JournalFlushResult {
+  flushed: string[];
+  kept: { id: string; reason: string }[];
+}
+
+/** Null means the session is old, finalised and safe to remove. */
+export function staleJournalReason(
+  session: Pick<SessionSummary, 'status' | 'pendingRollback' | 'interrupted' | 'finishedAt' | 'createdAt'>,
+  nowMs: number,
+  olderThanMs: number,
+): string | null {
+  if (session.interrupted || session.status === 'applying') return 'interrupted session';
+  if (session.pendingRollback > 0) return 'changes are still applied';
+  if (session.status !== 'rolled-back' && session.status !== 'failed') {
+    return `session status is ${session.status}`;
+  }
+
+  const finished = Date.parse(session.finishedAt ?? session.createdAt);
+  if (!Number.isFinite(finished)) return 'timestamp is unreadable';
+  if (nowMs - finished < olderThanMs) return 'not old enough';
+  return null;
 }

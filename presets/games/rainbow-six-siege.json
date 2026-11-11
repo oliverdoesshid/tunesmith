@@ -12,6 +12,11 @@
     "affinity": { "strategy": "performance-cores" },
     "priority": "High",
     "gpuPreference": "high-performance",
+    "network": {
+      "tcpAckFrequency": 1,
+      "tcpNoDelay": 1,
+      "interruptModeration": "disabled"
+    },
     "timerHold": true,
     "backgroundRules": [
       { "process": "chrome.exe", "action": "lower-priority", "priority": "Idle" },
@@ -34,6 +39,7 @@
     "On a CPU without efficiency cores the affinity plan falls back to every logical processor; the rest still applies.",
     "Thermal guard: above 90°C CPU or 87°C GPU the profile releases the game and waits 3 minutes before re-applying, so tuning never stacks on top of thermal throttling.",
     "GPU temperature needs nvidia-smi; on other GPUs that half of the guard is reported as unenforced rather than assumed safe.",
-    "Biggest FPS wins are still in-game: Vulkan API, resolution scale at 100, and shadows/Lumen-equivalent effects down."
+    "Biggest FPS wins are still in-game: Vulkan API, resolution scale at 100, and shadows/Lumen-equivalent effects down.",
+    "Network tuning follows only the server interface discovered at match time and is restored on exit; UDP-only traffic has no TCP stack value to tune."
   ]
 }

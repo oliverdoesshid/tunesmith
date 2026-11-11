@@ -1,8 +1,9 @@
 # Community marketplace: signatures, ratings and telemetry
 
-The marketplace is optional infrastructure. A build with no endpoint and no pinned key
-shows a configuration hint and cannot list or install anything — an empty trust store
-never means "trust everything".
+The marketplace defaults to the project's GitHub Pages catalog; `TUNESMITH_MARKET_URL`
+or `market/config.json` can point it elsewhere. No curator key is bundled, so a stock
+build reports a configuration/verification error and cannot list or install anything —
+an empty trust store never means "trust everything".
 
 ## 1. Trust model
 
@@ -15,10 +16,16 @@ Two independent checks protect every entry:
    detached Ed25519 signature over `tunesmith-entry-v1:<sha256>`. A preset whose digest or
    signature fails is excluded from the browser, not shown with a warning.
 
-Installation writes exactly the canonical bytes that were signed, then rebuilds
-`index.json`; the preset loader's existing digest check therefore keeps covering the file
-after install. Nothing in this path bypasses preview, policy or consent — installing only
-adds a preset to the library.
+Installation re-downloads the catalog, recomputes the payload's SHA-256 and re-verifies
+the entry's Ed25519 signature in main before writing exactly the canonical bytes that were
+signed. It writes them into the writable community directory
+(`<userData>/presets/community`), rebuilds `index.json`, and awaits an immediate repository
+re-index, so the preset loader's digest check keeps covering the file after install.
+Nothing in this path bypasses preview, policy or consent — installing only adds a preset
+to the library.
+
+The browser's compatibility badges are compiled in main against the detected machine;
+the renderer receives the verdict and reasons but cannot change them.
 
 ### Canonical JSON
 
@@ -81,8 +88,8 @@ Catalog limits: 100 entries, 2 MiB response body, no unknown fields, ISO timesta
 | Successful crash recovery | +8 |
 
 Labels: `safe` ≥ 80, `good` ≥ 60, `caution` ≥ 40, otherwise `risky`. A new preset with no
-votes and no telemetry is **not** labelled safe. The panel shows the two strongest reasons
-so the number is never a black box.
+votes and no telemetry is **not** labelled safe. The card shows the strongest reasons so
+the number is never a black box.
 
 ## 4. Telemetry
 

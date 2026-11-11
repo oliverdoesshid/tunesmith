@@ -1,7 +1,8 @@
 # Per-game performance engine
 
 > Status: implemented and unit-tested (detection, policy, activation/restore state machine,
-> crash recovery). **Not yet exercised with a real game process** — see §9.
+> crash recovery, non-hooking performance OSD, game-route TCP tuning, and the post-apply
+> stability watchdog). **Not yet exercised with a real game process** — see §9.
 
 ## 1. What it does
 
@@ -15,45 +16,83 @@ adjustments. When the game's process disappears, every one of them is undone.
 The unit of work is a **session**, and the session is written to disk *before* the first
 change, so the machine can always be returned to its previous state — even after a crash.
 
-## 2. Why polling, not process hooking
+## 2. Why observation, not injection
 
-The obvious implementation — inject a DLL, hook `CreateProcess`/`SetWinEventHook`, or
-install a kernel callback — was rejected deliberately:
+The obvious implementation — inject a DLL, hook `CreateProcess`, or install a kernel
+callback — was rejected deliberately:
 
 | Approach | Problem |
 |---|---|
 | DLL injection into the game | Anti-cheat (EAC, BattlEye, Vanguard) treats it as tampering; it can ban the user or refuse to launch |
-| `SetWinEventHook` for foreground changes | Still needs an out-of-process injection or a native addon, and gives no process-exit signal |
 | Kernel callback / driver | Requires a signed driver, disables Secure Boot trust assumptions, and is far outside a tuning app's remit |
-| **Polling a CIM/`Get-Process` snapshot** | **Chosen**: no code enters the game process, nothing to ban, nothing to crash |
+| Polling a CIM/`Get-Process` snapshot | Keeps a CLR/PowerShell host waking every couple of seconds, even when no game is running; replaced |
+| **`tasklist` for lifecycle + a read-only WinEvent observer** | **Chosen**: no code enters the game process, nothing to ban, nothing to crash |
 
-The watcher therefore observes from outside with two Win32 calls that only *read*:
-`GetForegroundWindow` and `GetWindowThreadProcessId`, plus `Get-Process` for names and paths.
+Process presence comes from `tasklist`; focus, title and the foreground rectangle come from
+read-only Win32 calls (`GetForegroundWindow`, `GetWindowThreadProcessId`, `GetWindowRect`).
 The only writes to the game process are `ProcessorAffinity` and `PriorityClass`, which are
 documented, owner-permitted APIs — not injection.
 
-A game is detected within one poll interval (default 2 s) of taking focus.
+A focus change wakes the observer immediately and triggers a fresh `tasklist` scan, so game
+detection does not wait for the two-second presence poll.
 
 ## 3. The watcher
 
 ```
-main process ──spawn once──► powershell.exe (loop)
-     ▲                              │
-     │  one JSON line per tick      │  GetForegroundWindow → pid → exe/path/title
-     └──────────────────────────────┘  Get-Process filtered to a watch list
+main process ──execFile(/NH)──► tasklist.exe ── watched pids ──┐
+     ▲                                                        │
+     │  foreground JSON only when it changes                  │
+     └── spawn once ──► powershell.exe (WinEvent observer) ────┘
 ```
 
 Design points:
 
-- **One persistent child, not one per tick.** Spawning PowerShell costs ~100 ms of CPU;
-  doing that every 2 s would be indefensible in a tool that claims to make a machine
-  faster. The loop idles in `Start-Sleep`.
+- **No polling CLR loop.** `tasklist /FO CSV /NH` is a short native process launched on the
+  poll interval; the PowerShell-hosted observer installs WinEvent hooks and then blocks in
+  `GetMessage`, so it has no periodic wakeups between focus, title or rectangle changes.
+- **Cache and coalesce.** The last process list is reused for pure geometry changes; a
+  coalesced observer line is emitted at most every 80 ms during a window drag. A foreground
+  identity change triggers an immediate process scan instead of waiting for the next tick.
 - **The watcher knows nothing about policy.** It receives image names (validated by
   `PROCESS_NAME_RE`) and reports pids. Matching, budgeting and refusal all happen in the
   controller, so a compromised or buggy watcher cannot change the machine.
-- **It is restarted with backoff** (1 s, 2 s, 5 s, 10 s, then give up and report
-  unhealthy). A silently dead watcher that still claims "Watching" would be worse than none.
+- **Both halves fail loudly.** The foreground observer restarts with backoff (1 s, 2 s, 5 s,
+  10 s, then gives up); the process scan retries with its own 1–10 s backoff. Either failure
+  reports unhealthy, because a silently dead watcher that still claims "Watching" is worse
+  than none.
 - **Payloads are line-delimited JSON**, so a partial write is discarded rather than parsed.
+
+### 3.1 Installed game discovery
+
+Profiles can be selected by hand, but the app also discovers what is already installed and
+matches those titles to local profiles. Discovery is a **read-only metadata scan**; it never
+launches a game, executes a manifest value, or writes to a launcher directory.
+
+| Source | What is read | Why this source |
+|---|---|---|
+| Steam | `steamapps/libraryfolders.vdf`, then `appmanifest_*.acf` in every library | covers secondary drives without assuming a single Steam root |
+| Epic Games | `%ProgramData%\Epic\EpicGamesLauncher\Data\Manifests\*.item` | the launcher's own install record, including `LaunchExecutable` |
+| Xbox / Microsoft Store | `Get-AppxPackage` plus each package's app manifest | package identity and executable names; AppContainer install paths are virtualised |
+| GOG | `HKCU` / `HKLM` `GOG.com\Games` registry entries | the per-title record written by GOG installers |
+
+Executable discovery is bounded (2 MiB per manifest, 500 manifests, 800 directory entries,
+three levels deep) and ranks candidates so helper binaries such as `unins000.exe` do not
+become the mapped launch path. A manifest path that is absolute, contains `..`, or resolves
+outside its install root is discarded. A source that fails is reported beside the results and
+does not hide the other sources.
+
+A discovered title is offered a profile only when the profile's executable name (or Store
+package family name) and optional `pathPrefix` match the installed record. Matching is pure
+and shared by the main process and the browser-preview mock. The renderer receives detected
+titles, executable paths and matched profile ids through `game:libraries`; profile summaries
+also carry `installed` and `detectedPath`. The result is cached for five minutes so opening the
+profile list and the discovery panel does not launch duplicate PowerShell scans, and the UI
+has an explicit **Rescan** action.
+
+Limitations: Microsoft Store has no reliable "this package is a game" flag, so its scan
+returns packages that declare an application executable and may include non-game apps; Steam
+shortcuts that have no app manifest are not discoverable, and GOG is read from the registry
+rather than Galaxy's private storage. None of the sources are mutated.
 
 ## 4. Adjustments
 
@@ -295,6 +334,131 @@ readable half active. A real trip always wins over a missing sibling sensor.
 changes belong to presets, which are captured and journaled; reaching into them from the
 game engine would create a second mutation path that rollback does not cover.
 
+### 4.10 Game-specific network route tuning
+
+An optional `actions.network` block applies TCP latency values only to the interface that
+is actually carrying the running game's server connection:
+
+```json
+"network": {
+  "tcpAckFrequency": 1,
+  "tcpNoDelay": 1,
+  "interruptModeration": "disabled"
+}
+```
+
+The three values are closed-vocabulary fields: `tcpAckFrequency` is 0, 1 or 2,
+`tcpNoDelay` is 0 or 1, and `interruptModeration` is `enabled` or `disabled`. A profile
+cannot name an adapter, an interface GUID, a registry path, a PowerShell command, or a
+process. Schema validation rejects unknown keys and an empty network action.
+
+**Discovery is read-only and OS-derived.** At activation, the platform layer asks Windows
+for the game pid's established TCP connections (`Get-NetTCPConnection -OwningProcess`) and
+bound UDP endpoints (`Get-NetUDPEndpoint`). It resolves each local address through
+`Get-NetIPAddress` to an interface index, then `Get-NetAdapter` to the interface GUID and
+adapter name. Loopback and wildcard addresses are discarded, as are rows that cannot be
+mapped to a real adapter. Duplicate endpoints are removed and results are grouped by
+interface. No game endpoint is hard-coded and no address is trusted as a registry key.
+
+**Only relevant interfaces are touched.** TCP values are written only for interfaces with
+at least one established TCP flow for this game. UDP-only gameplay has no per-interface TCP
+stack value to tune; in that case the controller records an honest skipped adjustment, and
+only the optional NIC property is attempted. Interrupt moderation is a single adapter
+property and is applied to the first discovered route adapter. If the driver does not
+expose `*InterruptModeration`/`InterruptModeration`, that part is skipped without failing
+the rest.
+
+**Capture, persist, then mutate.** The controller captures the current
+`TcpAckFrequency`, `TCPNoDelay`, and (when exposed) the adapter's interrupt-moderation
+registry keyword and value, writes the snapshot to `session.network`, and only then calls
+the writer. A missing TCP value is captured as `null` and restored by deleting the value,
+not by guessing a default. The NIC write uses `-NoRestart`; the driver may apply it on the
+next adapter reset or reboot rather than instantly, and this is stated in the policy
+warning. Restore is best-effort across every captured interface and the NIC; it runs even
+when an earlier restore step failed, and crash recovery uses the same session record.
+
+Limits: these are per-interface Windows TCP settings, not per-process packet steering.
+While active they affect other TCP traffic on that interface too. They do not bypass the
+game's network stack, inject a driver, or promise lower latency; they change acknowledged
+delayed-ACK/Nagle behaviour and, where available, NIC interrupt coalescing. A machine that
+requires elevation for adapter properties will record the failure instead of silently
+claiming success. Bundled CS2 and Rainbow Six Siege profiles enable the block for their
+moderate-risk sessions; a conservative profile may not use it.
+
+### 4.11 Per-machine adaptation (no model, no background service)
+
+A game profile is written for a class of machines, not for the one in front of it. At
+activation the controller derives a small `MachineProfile` from facts detection already
+produced — logical processors, physical cores, hybrid split, RAM tier and GPU kind — and
+narrows the profile before applying anything:
+
+| Condition | Adaptation |
+|---|---|
+| 6 or fewer logical processors, `performance-cores` / `physical-cores` | Use `all-cores`; pinning a small CPU starves Windows and input |
+| 4 threads or fewer | At most 2 suspended background processes |
+| 8 threads or fewer | At most 6 suspended background processes |
+| Low tier (≤ 4 threads or ≤ 8 GB) with `timerHold` | Timer hold disabled; its power/heat cost outweighs the scheduling gain |
+| Integrated / virtual / no GPU with `high-performance` | Preference skipped; it would have no effect |
+| Unknown GPU, RAM or core facts | Nothing is guessed: the field stays as authored unless a rule has positive evidence |
+
+Every adaptation is written into the session as an `adaptation` adjustment with the reason,
+so the UI never silently drops a rule. Adaptation is a pure function over already-detected
+data: **no AI model, no local inference server, no background process, and therefore
+nothing running during a game session**. If a local model advisor is added later, it must
+be gated on `GameController.hasActiveSession()` and unloaded when a session starts; this
+build starts no such process.
+
+Unknown hardware is a first-class case, not an error: topology-only facts still adapt
+small CPUs, and a machine whose RAM or GPU cannot be read keeps its authored settings
+rather than being guessed at.
+
+### 4.12 Post-apply stability and thermal watchdog
+
+Aggressive tuning presets are different from game-profile guards: they run after the apply
+has completed, when no game session necessarily exists. `PostApplyWatchdog` therefore
+monitors the applied session itself for five minutes, sampling every 15 seconds. It is
+started only when a preset with `risk: aggressive` returns `status: applied`.
+
+The watchdog acts through the normal transaction engine:
+
+```
+aggressive apply completes
+        │
+        ▼
+PostApplyWatchdog (5 min, 15 s samples)
+        │
+        ├─ CPU or GPU > 90 °C ───────────────┐
+        ├─ DPC % ≥ 8 for 2 samples ──────────┤
+        └─ main-process stall > 15 s ───────┤
+                                             ▼
+                              Executor.rollback(sessionId)
+                              (same journal path; no wait)
+```
+
+- **Thermal.** CPU and GPU temperature come from the same sensor chain as the game
+  guards. A reading strictly above 90 °C trips immediately. Exactly 90 °C does not, matching
+  the stated `>90 °C` threshold. Missing sensors are reported as unavailable, never as cool.
+- **DPC pressure.** The probe reads Windows `% DPC Time` for the processor total from
+  `Win32_PerfFormattedData_PerfOS_Processor` through CIM. It is a percentage of processor
+  time, not a microsecond latency measurement; two consecutive samples at or above 8% trip.
+  The UI labels it `DPC` and retains the source field.
+- **Freeze warning.** The watchdog compares the expected sample time with the actual time.
+  A stall longer than 15 seconds is treated as evidence of a system freeze and trips. A
+  complete machine freeze can only be acted on after the process runs again; if the app is
+  killed while frozen, the durable preset journal still holds the rollback records.
+- **Automatic rollback.** A trip sets a visible `rolling-back` state and calls
+  `Executor.rollback(sessionId)` immediately. There is no normal exit wait, no second
+  mutation path, and no cache-clearing shortcut. A successful report becomes `rolled-back`;
+  an incomplete report becomes `rollback-failed` with the errors, so the user is never told
+  a failed restore succeeded.
+
+The status is pushed over `engine:post-apply-status` and is also available on
+`engine.postApply()`. A manual rollback, Restore to Default, or a new preset apply cancels
+the previous monitoring window first. Monitoring runs in the main process while TuneSmith
+is open; quitting the app ends the window, and the pre-existing applied session remains
+available for manual rollback. The watchdog is an additional safety layer, not a claim that
+an arbitrary aggressive preset can never destabilise a machine.
+
 ## 5. Crash and exit safety
 
 The failure that matters is "the app died while Chrome was suspended". Three mechanisms
@@ -306,7 +470,8 @@ prevent it:
    restores them, marking the session `interrupted` and surfacing a message if anything
    could not be undone.
 3. **Quit is deferred.** `before-quit` prevents the quit, awaits `game.shutdown()` (resume,
-   restore priorities, restore GPU preference), and only then quits.
+   restore priorities, restore GPU preference, restore per-interface network values), and
+   only then quits.
 
 Restore is **best-effort and total**: every step is attempted even if an earlier one failed,
 because a partial restore is worse than a noisy one. Pids that no longer exist are ignored.
@@ -319,9 +484,11 @@ priority, suspend rules carry no priority and priority rules must carry one.
 
 Semantic (`evaluateGameProfile`): protected trigger, protected background process, suspend
 with `conservative` risk, suspension budget, affinity indices that do not exist on this
-machine, processor groups > 64. Warnings: non-hybrid CPU with a P-core strategy, power-saving
-GPU preference, standby flush, launcher suspension, timer hold (power cost), and thermal
-limits tight enough to trip under ordinary load (CPU below 75 °C, GPU below 70 °C).
+machine, processor groups > 64, and network tuning in a conservative profile. Warnings:
+non-hybrid CPU with a P-core strategy, power-saving GPU preference, standby flush, launcher
+suspension, timer hold (power cost), network tuning (admin rights, per-interface scope,
+UDP-only skip), and thermal limits tight enough to trip under ordinary load (CPU below
+75 °C, GPU below 70 °C).
 
 A blocked profile is suppressed for as long as that executable stays in the foreground; it is
 not retried every tick.
@@ -343,39 +510,75 @@ src/shared/game/policy.ts      deny list, budgets, findings
 src/shared/game/affinity.ts    mask computation and fallbacks
 src/shared/game/matcher.ts     trigger matching
 src/shared/game/describe.ts    UI labels
+src/shared/game/library.ts     installed-title to profile matching (pure)
+src/main/platform/game/libraries.ts read-only Steam/Epic/Xbox/GOG discovery
+src/main/services/steamgriddb.ts   SteamGridDB v2 search/artwork + bounded disk cache
+src/main/services/game-files.ts    open/launch path validation against the scan
+src/main/services/artwork-*.ts     ts-art protocol + image URL/type rules
+src/renderer/components/GameLauncherGrid.tsx  library grid (cached art, launch, browse)
 src/main/platform/game/scripts.ts   PowerShell/C# bodies (static)
-src/main/platform/game/watcher.ts   persistent watcher with backoff
+src/main/platform/game/watcher.ts   tasklist poll + event-driven foreground observer
 src/main/platform/game/control.ts   affinity, priority, suspend, GPU pref, purge
 src/main/platform/game/eco.ts       EcoQoS efficiency-mode batch control
 src/main/platform/game/timer.ts     crash-safe 0.5 ms timer holder child
+src/main/platform/game/network.ts   read-only game-route discovery, TCP/NIC capture/apply/restore
 src/main/platform/game/topology.ts  CPU sets + synthetic fallback
+src/main/platform/game/frame-script.ts  static ETW present-sampler C# body
+src/main/platform/game/frame-monitor.ts child wrapper + strict line parser
 src/main/engine/game/store.ts       profile loading, session persistence
 src/main/engine/game/controller.ts  state machine
+src/main/engine/post-apply.ts       five-minute aggressive-apply watchdog -> journal rollback
+src/main/platform/stability.ts      read-only temperature + DPC probe
+src/shared/post-apply.ts            watchdog status DTOs (shared with renderer)
+src/main/overlay/geometry.ts        OSD placement and display clamping
+src/main/overlay/state.ts           GameStatus + frame sample -> display DTO
+src/main/overlay/controller.ts      transparent OSD window lifecycle + anchoring
+src/preload/overlay.ts              display-only bridge (onState)
+src/renderer/overlay.tsx            OSD layout + browser-preview fixture
 presets/games/*.json                bundled profiles
 tests/game-*.test.ts                engine tests (timer hold covered in tests/latency.test.ts)
 ```
 
 ## 9. Verification status
 
-Tested (160 tests total):
+Tested:
 
+- discovery: VDF/ACF and Epic parsing, traversal rejection, executable ranking, source
+  cache/in-flight sharing, Store/GOG normalisation, and profile suggestions;
 - mask computation for SMT, hybrid, inverted classes, invalid custom indices, > 64 LPs;
 - every policy rule, including the shell-suspend and shell-eco blocks;
 - activation, GPU capture-before-write ordering, two-tick exit debounce, restore, manual
   stop, blocked profiles, crash recovery, switching game mode off;
+- game network schema/policy, route capture ordering (capture and persist before apply),
+  and restore through the game session; the real PowerShell discovery/write path is not
+  exercised in unit tests;
+- post-apply watchdog: CPU/GPU trip, two-sample DPC trip, freeze-sized stall, stable
+  five-minute completion, manual cancellation, and the missing-sensor message;
 - eco-mode apply and switch-off, failed eco restore surfacing, self-pid exclusion and
   Efficiency Mode on a denied or launcher process;
 - timer hold: policy warning, UI label, holder script shape, activation recording,
   exit-time stop, and the unavailable-holder path;
-- bundled profiles stay schema-valid and policy-clean.
+- launcher path rules and IPC routing: traversal/UNC/device rejection, discovered-root folder
+  matching, detected-executable containment, and missing-executable refusal;
+- artwork metadata parsing, HTTPS host allowlist, magic-byte checks, cache restart, missing key,
+  and retry after an outage;
+- bundled profiles stay schema-valid and policy-clean;
+- OSD placement, state mapping, ETW line parsing, malformed-value rejection, and watcher
+  geometry validation;
+- ETW present sampling against a real presenting process: 144.0 FPS, 128.6 FPS 1% low,
+  6.9 ms frame time (Chromium GPU process, so not a game).
 
 Verified live (read-only):
 
 - `node scripts/topology.mjs` on this machine: 12 logical processors, 6 physical cores,
   `source: cpuset`, SMT pairs correctly identified.
+- ETW sampler live probe as above; the session started without elevation because this account
+  is in `Performance Log Users`.
 
-**Not verified:** an actual game launch → suspend → resume cycle, the standby purge, and
-the timer hold. All three need a real game session with elevation, which is not something
+**Not verified:** an actual game launch → suspend → resume cycle, a real quick launch from the
+launcher grid, the standby purge, the timer hold, a live SteamGridDB lookup, and an OSD window
+anchored over a real game (exclusive fullscreen is the main risk). The game paths need a real session with elevation;
+the artwork path needs a live API key. Neither is something
 a development run should perform unasked on a working machine. Treat the first session as
 a supervised test: start with the esports profile, confirm the adjust/restore pair (including
 the timer holder stopping on exit), and only then try a profile that suspends processes.
@@ -386,3 +589,56 @@ A new adjustment needs: a schema field, a policy rule, one adapter method, a ste
 `activate()` that records an `AppliedAdjustment`, the matching undo in `restoreSession()`, and
 a fake-adapter test that asserts the undo. If it cannot be undone, it does not belong in this
 engine.
+
+## 11. Launcher integration
+
+The launcher is an entry point into this engine, not a second engine. `GameLauncherGrid` shows the
+scanner's titles and requests artwork in bounded batches; it never executes or opens a path
+itself. `game:launch` re-resolves the title from the scan, requires a detected `.exe` inside its
+install root, calls `setWatching(true)`, then `shell.openPath` on that executable. The watcher
+then matches the foreground process exactly as it would if the user had launched the game from
+Steam. `game:open-folder` similarly opens only a discovered install root. Path rules live in
+`src/main/services/game-files.ts`; SteamGridDB and `ts-art://` live in `src/main/services/`.
+
+## 12. Performance OSD
+
+The OSD is deliberately **not** an injected overlay. It is a second Electron
+`BrowserWindow`: transparent, frameless, always-on-top, skip-taskbar, non-focusable and
+click-through. It receives a display-only DTO over its own preload bridge (`onState` only),
+so it has no app API, filesystem access, invoke surface or inbound IPC.
+
+```
+GameController tick ──► foreground pid + GetWindowRect
+        │                        │
+        │ status/telemetry       ▼
+        └──────────────► GameOverlayController
+                                 │  anchor to game rect (DIP conversion,
+                                 │  clamp inside that display)
+                                 ├──► transparent BrowserWindow
+                                 └──► ETW child: DXGI Present #42 / D3D9 Present #1
+                                          (10 s window; fps, worst-1% low, frame time)
+```
+
+The watcher reports the foreground window rectangle after opting into per-monitor DPI
+awareness; the controller converts the physical rectangle with
+`screen.screenToDipRect(null, rect)` so a game on a secondary display is scaled against the
+correct monitor. The OSD is placed at the game's top-left with an 18 px inset and clamped
+to the display bounds. It is shown only when the active session's pid still owns the
+foreground window; otherwise it hides while ETW can keep sampling for a quick alt-tab.
+
+The frame sampler uses ETW, not a hook: `Microsoft-Windows-DXGI` PresentStart (event 42)
+for D3D10–12 and `Microsoft-Windows-D3D9` Present (event 1) for D3D9. A PowerShell/C# child
+opens the real-time session, filters by pid, and computes FPS and the average of the slowest
+1% of frame times over the last 10 seconds. The C# body is static and fed over stdin, so no
+profile, process name or renderer string is ever concatenated into a command line. The
+child has a parent watchdog and is stopped with the session.
+
+Failure is explicit. If the ETW session cannot start (no elevation / not in `Performance
+Log Users`), the OSD keeps showing the profile, adjustment counts and available temperatures,
+and labels the FPS region `NO ETW` with the error. A `null` frame is never rendered as zero.
+
+Limits: exclusive-fullscreen games may cover normal always-on-top windows, anti-cheat
+policies vary, and ETW rights are environment-dependent. There is no DLL injection, no
+game-memory read, and no write to the game process. `TuneSmithOsdApi` exposes only a
+state subscription; toggle/status go through the narrow `game.osd` / `game:osd-set` IPC
+channels, revalidated in main.

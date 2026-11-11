@@ -8,6 +8,7 @@
  */
 import { psQuote, runPowerShellJson } from './platform/powershell';
 import { TuneSmithError } from '../shared/errors';
+import { logger } from './logging';
 
 let elevationCache: boolean | null = null;
 
@@ -21,6 +22,7 @@ $principal = [Security.Principal.WindowsPrincipal]::new($id)
 `);
 
   elevationCache = raw.elevated === true;
+  logger.info('elevation', 'integrity check', { elevated: elevationCache, force });
   return elevationCache;
 }
 
@@ -32,22 +34,37 @@ export function invalidateElevationCache(): void {
  * Ask Windows to relaunch this executable with administrator rights.
  * The caller is expected to quit immediately on success.
  */
-export async function relaunchElevated(execPath: string, args: readonly string[]): Promise<void> {
+export async function relaunchElevated(execPath: string, args: readonly string[]): Promise<number | null> {
   if (process.platform !== 'win32') {
     throw new TuneSmithError('not-supported', 'Elevation is only implemented for Windows.');
   }
 
-  const argList = args.length === 0 ? '@()' : `@(${args.map((a) => psQuote(a)).join(', ')})`;
-  const raw = await runPowerShellJson<{ launched?: boolean; detail?: string }>(`
+  // Passing an empty array to -ArgumentList is rejected by some PowerShell hosts. Omit the
+  // parameter entirely for a packaged relaunch, which has no forwarded arguments.
+  const argumentClause =
+    args.length === 0 ? '' : ` -ArgumentList @(${args.map((a) => psQuote(a)).join(', ')})`;
+  const workingDirectory = process.cwd();
+  logger.info('elevation', 'requesting Windows RunAs', {
+    execPath,
+    args,
+    workingDirectory,
+  });
+
+  const raw = await runPowerShellJson<{ launched?: boolean; pid?: number; detail?: string }>(`
 try {
-  Start-Process -FilePath ${psQuote(execPath)} -ArgumentList ${argList} -Verb RunAs -ErrorAction Stop
-  [pscustomobject]@{ launched = $true; detail = 'elevated instance started' } | ConvertTo-Json -Compress
+  $process = Start-Process -FilePath ${psQuote(execPath)}${argumentClause} -WorkingDirectory ${psQuote(workingDirectory)} -Verb RunAs -PassThru -ErrorAction Stop
+  [pscustomobject]@{ launched = $true; pid = $process.Id; detail = 'elevated instance started' } | ConvertTo-Json -Compress
 } catch {
-  [pscustomobject]@{ launched = $false; detail = [string]$_.Exception.Message } | ConvertTo-Json -Compress
+  [pscustomobject]@{ launched = $false; pid = $null; detail = [string]$_.Exception.Message } | ConvertTo-Json -Compress
 }
 `);
 
   if (raw.launched !== true) {
+    logger.warn('elevation', 'Windows RunAs was declined or failed', { detail: raw.detail ?? null });
     throw new TuneSmithError('not-elevated', 'Elevation was declined or failed.', String(raw.detail ?? ''));
   }
+
+  const pid = typeof raw.pid === 'number' ? raw.pid : null;
+  logger.info('elevation', 'elevated child process started', { pid, detail: raw.detail ?? null });
+  return pid;
 }

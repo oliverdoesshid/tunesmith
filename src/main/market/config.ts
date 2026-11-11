@@ -5,9 +5,14 @@
  * first, then from `<appPath>/market/config.json` for packaged installs. A URL must be
  * HTTPS, except loopback HTTP for local development; anything else is ignored with a log
  * line rather than half-enabled.
+ *
+ * With no URL configured at all the public GitHub Pages catalog is used. The catalog is
+ * still signature-checked against the pinned key ring, so the default endpoint is a
+ * convenience, not a trust decision.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { DEFAULT_MARKET_CATALOG_URL } from '../../shared/market/defaults';
 import { loadTrustedKeys } from './verify';
 
 export interface MarketplaceSettings {
@@ -57,10 +62,11 @@ export function loadMarketplaceSettings(
   const file = readConfigFile(appPath);
   const env = process.env;
 
-  const catalogUrl = safeUrl(
-    env.TUNESMITH_MARKET_URL ?? file.catalogUrl,
-    'marketplace URL',
-  );
+  const configuredCatalog = env.TUNESMITH_MARKET_URL ?? file.catalogUrl;
+  const catalogUrl =
+    configuredCatalog === undefined || configuredCatalog === null
+      ? DEFAULT_MARKET_CATALOG_URL
+      : safeUrl(configuredCatalog, 'marketplace URL');
   const telemetryUrl = safeUrl(
     env.TUNESMITH_TELEMETRY_URL ?? file.telemetryUrl,
     'telemetry URL',
@@ -78,7 +84,10 @@ export function loadMarketplaceSettings(
     telemetryUrl,
     keyRing,
     stateDir,
-    installDir: path.join(stateDir, 'presets'),
+    // A writable community directory beside the user's data. The bundled
+    // `presets/community` directory is installed read-only next to the app and its files
+    // are signed individually; marketplace installs are verified at download time.
+    installDir: path.join(userData, 'presets', 'community'),
     appVersion,
   };
 }

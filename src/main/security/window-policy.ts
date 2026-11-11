@@ -7,6 +7,7 @@
  * context, and every message on it is re-validated in the main process.
  */
 import { session, shell, type BrowserWindow } from 'electron';
+import { logger } from '../logging';
 
 const DEV_ORIGIN = 'http://localhost:5273';
 
@@ -20,7 +21,9 @@ function contentSecurityPolicy(devUrl: string | null): string {
     "default-src 'none'",
     `script-src ${scriptSrc}`,
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data:",
+    // `ts-art:` serves SteamGridDB artwork from the main-process cache; remote images
+    // are never loaded by the renderer itself.
+    "img-src 'self' data: ts-art:",
     "font-src 'self' data:",
     `connect-src ${connectSrc}`,
     "base-uri 'none'",
@@ -32,6 +35,7 @@ function contentSecurityPolicy(devUrl: string | null): string {
 
 export function installContentSecurityPolicy(devUrl: string | null): void {
   const csp = contentSecurityPolicy(devUrl);
+  logger.debug('security', 'installing content security policy', { devUrl });
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
@@ -44,10 +48,17 @@ export function installContentSecurityPolicy(devUrl: string | null): void {
 }
 
 export function denyAllPermissions(): void {
-  session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => {
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
+    logger.warn('security', 'permission request denied', {
+      permission,
+      url: contents.getURL(),
+    });
     callback(false);
   });
-  session.defaultSession.setPermissionCheckHandler(() => false);
+  session.defaultSession.setPermissionCheckHandler((_contents, permission) => {
+    logger.debug('security', 'permission check denied', { permission });
+    return false;
+  });
 }
 
 function isAllowedUrl(url: string, devUrl: string | null): boolean {
@@ -58,20 +69,29 @@ function isAllowedUrl(url: string, devUrl: string | null): boolean {
 export function hardenWindow(win: BrowserWindow, devUrl: string | null): void {
   win.webContents.setWindowOpenHandler(({ url }) => {
     // External links are handed to the OS browser; never opened in-app.
-    if (url.startsWith('https://')) void shell.openExternal(url);
+    const external = url.startsWith('https://');
+    logger.info('security', 'window.open intercepted', { url, external });
+    if (external) void shell.openExternal(url);
     return { action: 'deny' };
   });
 
   win.webContents.on('will-attach-webview', (event) => {
+    logger.warn('security', 'blocked webview attachment', { url: win.webContents.getURL() });
     event.preventDefault();
   });
 
   win.webContents.on('will-navigate', (event, url) => {
-    if (!isAllowedUrl(url, devUrl)) event.preventDefault();
+    if (!isAllowedUrl(url, devUrl)) {
+      logger.warn('security', 'blocked navigation', { url, devUrl });
+      event.preventDefault();
+    }
   });
 
   win.webContents.on('will-redirect', (event, url) => {
-    if (!isAllowedUrl(url, devUrl)) event.preventDefault();
+    if (!isAllowedUrl(url, devUrl)) {
+      logger.warn('security', 'blocked redirect', { url, devUrl });
+      event.preventDefault();
+    }
   });
 }
 

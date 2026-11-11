@@ -90,9 +90,16 @@ async function main() {
     outfile: path.join(root, 'dist/preload/index.cjs'),
     plugins: [watchPlugin],
   });
+  const overlayPreloadCtx = await context({
+    ...common,
+    entryPoints: [path.join(root, 'src/preload/overlay.ts')],
+    outfile: path.join(root, 'dist/preload/overlay.cjs'),
+    plugins: [watchPlugin],
+  });
 
   await mainCtx.watch();
   await preloadCtx.watch();
+  await overlayPreloadCtx.watch();
   console.log(`[dev] renderer at ${devUrl}`);
 }
 

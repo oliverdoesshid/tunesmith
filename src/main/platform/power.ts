@@ -6,6 +6,10 @@
  *      tuning preset cannot quietly destroy a laptop's runtime.
  *   2. Every setting is resolved to a friendly id in shared/power.ts. A preset can
  *      never hand us a raw GUID.
+ *   3. Settings hidden from `powercfg -query` are captured through the official
+ *      `PowerReadACValue` API. Writes still use `powercfg -setacvalueindex`, so there is
+ *      no separate registry mutation path. If the API cannot read the effective value,
+ *      capture fails closed and the setting is not written.
  *
  * Note that `powercfg -setacvalueindex` only stages a value; the scheme must be made
  * active again before the change takes effect. That is why `applySetting` always
@@ -14,6 +18,73 @@
 import { TuneSmithError } from '../../shared/errors';
 import { POWER_SETTINGS, POWER_SUBGROUPS, type PowerSettingId } from '../../shared/power';
 import { oneLine, runExe } from './exec';
+import { psQuote, runPowerShellJson } from './powershell';
+
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function checkedGuid(value: string, label: string): string {
+  if (!GUID_RE.test(value)) {
+    throw new TuneSmithError('invalid-request', `Invalid ${label} GUID`);
+  }
+  return value;
+}
+
+interface PowerApiResult {
+  available?: boolean;
+  type?: unknown;
+  value?: unknown;
+  code?: unknown;
+}
+
+export function buildPowerReadApiScript(schemeGuid: string, setting: PowerSettingId): string {
+  const meta = POWER_SETTINGS[setting];
+  if (meta.readVia !== 'power-api') {
+    throw new TuneSmithError('invalid-request', `${setting} is not read through the power API`);
+  }
+  return [
+    'Add-Type -TypeDefinition @\'',
+    'using System;',
+    'using System.Runtime.InteropServices;',
+    'public static class TuneSmithPowerApi {',
+    '  [DllImport("powrprof.dll", SetLastError = true)]',
+    '  public static extern uint PowerReadACValue(IntPtr RootPowerKey, ref Guid SchemeGuid, ref Guid SubGroupOfPowerSettingsGuid, ref Guid PowerSettingGuid, out uint Type, IntPtr Buffer, ref uint BufferSize);',
+    '}',
+    "'@;",
+    `$scheme = [Guid]::Parse(${psQuote(checkedGuid(schemeGuid, 'power scheme'))});`,
+    `$subgroup = [Guid]::Parse(${psQuote(POWER_SUBGROUPS[meta.subgroup])});`,
+    `$setting = [Guid]::Parse(${psQuote(meta.guid)});`,
+    '$type = [uint32]0;',
+    '$size = [uint32]4;',
+    '$buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal(4);',
+    'try {',
+    '  $rc = [TuneSmithPowerApi]::PowerReadACValue([IntPtr]::Zero, [ref]$scheme, [ref]$subgroup, [ref]$setting, [ref]$type, $buffer, [ref]$size);',
+    '  if ($rc -ne 0) {',
+    '    [pscustomobject]@{ available = $false; code = $rc } | ConvertTo-Json -Compress;',
+    '    return;',
+    '  }',
+    '  $value = [Runtime.InteropServices.Marshal]::ReadInt32($buffer);',
+    '  [pscustomobject]@{ available = $true; type = [uint32]$type; value = [uint32]$value; size = [uint32]$size } | ConvertTo-Json -Compress;',
+    '} finally {',
+    '  [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer);',
+    '}',
+  ].join('\n');
+}
+
+async function readSettingViaPowerApi(schemeGuid: string, setting: PowerSettingId): Promise<number | null> {
+  const meta = POWER_SETTINGS[setting];
+  let result: PowerApiResult;
+  try {
+    result = await runPowerShellJson<PowerApiResult>(buildPowerReadApiScript(schemeGuid, setting), {
+      timeoutMs: 20_000,
+    });
+  } catch {
+    return null;
+  }
+  if (result.available !== true || result.type !== 4) return null;
+  const value = Number(result.value);
+  if (!Number.isInteger(value) || value < meta.min || value > meta.max) return null;
+  return value;
+}
 
 export interface ActiveScheme {
   guid: string;
@@ -42,6 +113,8 @@ export async function getActiveScheme(): Promise<ActiveScheme> {
  */
 export async function readSetting(schemeGuid: string, setting: PowerSettingId): Promise<number | null> {
   const meta = POWER_SETTINGS[setting];
+  checkedGuid(schemeGuid, 'power scheme');
+  if (meta.readVia === 'power-api') return readSettingViaPowerApi(schemeGuid, setting);
   const subgroup = POWER_SUBGROUPS[meta.subgroup];
   const result = await runExe('powercfg.exe', ['-query', schemeGuid, subgroup, meta.guid]);
   if (result.code !== 0) {
@@ -61,6 +134,7 @@ export async function setActiveScheme(schemeGuid: string): Promise<void> {
 
 export async function applySetting(schemeGuid: string, setting: PowerSettingId, value: number): Promise<void> {
   const meta = POWER_SETTINGS[setting];
+  checkedGuid(schemeGuid, 'power scheme');
 
   // Defence in depth: the policy layer already rejected out-of-range values.
   if (!Number.isInteger(value) || value < meta.min || value > meta.max) {

@@ -8,6 +8,7 @@
  */
 import { execFile } from 'node:child_process';
 import { TuneSmithError } from '../../shared/errors';
+import { logger } from '../logging';
 
 export interface RunResult {
   code: number;
@@ -21,6 +22,13 @@ export interface RunOptions {
 }
 
 export async function runExe(file: string, args: readonly string[], options: RunOptions = {}): Promise<RunResult> {
+  const startedAt = Date.now();
+  logger.debug('exec', 'spawn', {
+    file,
+    argCount: args.length,
+    timeoutMs: options.timeoutMs ?? 15_000,
+  });
+
   return new Promise<RunResult>((resolve, reject) => {
     execFile(
       file,
@@ -33,7 +41,9 @@ export async function runExe(file: string, args: readonly string[], options: Run
         shell: false,
       },
       (error, stdout, stderr) => {
+        const durationMs = Date.now() - startedAt;
         if (error === null) {
+          logger.debug('exec', 'completed', { file, code: 0, durationMs });
           resolve({ code: 0, stdout: stdout ?? '', stderr: stderr ?? '' });
           return;
         }
@@ -42,15 +52,22 @@ export async function runExe(file: string, args: readonly string[], options: Run
 
         // A string `code` means the process never started (ENOENT, EACCES…).
         if (typeof err.code === 'string') {
+          logger.error('exec', 'spawn failed', { file, code: err.code, durationMs, message: err.message });
           reject(new TuneSmithError('spawn-failed', `Could not launch ${file}`, `${err.code}: ${err.message}`));
           return;
         }
 
         if (err.killed === true) {
+          logger.error('exec', 'timed out', { file, durationMs, timeoutMs: options.timeoutMs ?? 15_000 });
           reject(new TuneSmithError('unexpected-exit', `${file} timed out`, (stderr ?? '').trim()));
           return;
         }
 
+        logger.debug('exec', 'exited non-zero', {
+          file,
+          code: typeof err.code === 'number' ? err.code : -1,
+          durationMs,
+        });
         resolve({
           code: typeof err.code === 'number' ? err.code : -1,
           stdout: typeof stdout === 'string' ? stdout : '',

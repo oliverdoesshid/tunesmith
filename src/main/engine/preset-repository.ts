@@ -8,18 +8,26 @@
 import type { LoadResult, LoadedPreset } from '../../shared/preset/loader';
 import { loadPresetDirectory } from '../../shared/preset/loader';
 
+export interface PresetDirectory {
+  dir: string;
+  /** Published bundles require an Ed25519 signature per preset. */
+  requireSignatures?: boolean;
+  publicKey?: string;
+}
+
 export class PresetRepository {
-  private readonly dirs: readonly string[];
+  private readonly dirs: readonly PresetDirectory[];
   private cache: LoadResult | null = null;
 
   /** Directories are searched in order; the first provider of a preset id wins. */
-  constructor(dirs: string | readonly string[]) {
-    this.dirs = typeof dirs === 'string' ? [dirs] : [...dirs];
+  constructor(dirs: string | readonly (string | PresetDirectory)[]) {
+    const list = typeof dirs === 'string' ? [dirs] : [...dirs];
+    this.dirs = list.map((entry) => (typeof entry === 'string' ? { dir: entry } : entry));
   }
 
   /** The bundled directory, used by “open folder”. */
   get directory(): string {
-    return this.dirs[0] ?? '';
+    return this.dirs[0]?.dir ?? '';
   }
 
   async load(force = false): Promise<LoadResult> {
@@ -29,8 +37,11 @@ export class PresetRepository {
     const failures: LoadResult['failures'] = [];
     const seen = new Map<string, string>();
 
-    for (const dir of this.dirs) {
-      const result = await loadPresetDirectory(dir);
+    for (const config of this.dirs) {
+      const result = await loadPresetDirectory(config.dir, {
+        ...(config.requireSignatures !== undefined ? { requireSignatures: config.requireSignatures } : {}),
+        ...(config.publicKey !== undefined ? { publicKey: config.publicKey } : {}),
+      });
       failures.push(...result.failures);
       for (const preset of result.presets) {
         const existing = seen.get(preset.preset.id);

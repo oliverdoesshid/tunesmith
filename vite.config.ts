@@ -1,5 +1,10 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vitest/config';
+
+const rootDir = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Only the renderer goes through Vite. The main process and the preload script are
@@ -11,7 +16,7 @@ import { defineConfig } from 'vitest/config';
  */
 export default defineConfig({
   base: './',
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   server: {
     port: 5273,
     strictPort: true,
@@ -19,12 +24,32 @@ export default defineConfig({
   build: {
     outDir: 'dist/renderer',
     emptyOutDir: true,
-    target: 'chrome130',
+    // The renderer only runs in Electron's bundled Chromium, so there is no reason to
+    // down-level modern syntax or ship compatibility helpers.
+    target: 'esnext',
+    minify: 'esbuild',
+    cssMinify: 'esbuild',
     sourcemap: false,
+    reportCompressedSize: false,
+    modulePreload: { polyfill: false },
+    rolldownOptions: {
+      treeshake: {
+        // The only side-effect-only imports are the two stylesheets; preserve those
+        // and let unused JavaScript modules/exports be removed aggressively.
+        moduleSideEffects: [{ test: /\.css(?:\?|$)/, sideEffects: true }],
+        propertyReadSideEffects: false,
+        propertyWriteSideEffects: false,
+        unknownGlobalSideEffects: false,
+      },
+      input: {
+        app: path.join(rootDir, 'index.html'),
+        overlay: path.join(rootDir, 'overlay.html'),
+      },
+    },
   },
   test: {
     environment: 'node',
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx', 'test/**/*.test.ts', 'test/**/*.test.tsx'],
     reporters: 'default',
   },
 });

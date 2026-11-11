@@ -10,17 +10,28 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { EVENT_CHANNELS, IPC_CHANNELS } from '../shared/channels';
 import type { ElevationResult, IpcEnvelope, PresetSummary, TuneSmithApi } from '../shared/ipc';
 import type { CompiledPlan } from '../shared/preset/compiler';
+import type { ServiceDependencyGraph } from '../shared/service-graph';
 import type {
   AppInfo,
   ApplyOutcome,
   EngineProgress,
+  MemorySnapshot,
   PreflightReport,
   RollbackReport,
   SessionSummary,
 } from '../shared/session';
 import type { HardwareSpec } from '../shared/types';
-import type { GameProfileSummary, GameStatus } from '../shared/game/types';
+import type { ArtworkRequestItem, GameArtworkBatch } from '../shared/game/artwork';
+import type { OsdStatus } from '../shared/game/osd';
+import type {
+  GameLaunchResult,
+  GameLibraryScanResult,
+  GameProfileSummary,
+  GameStatus,
+} from '../shared/game/types';
 import type { InstallResult, MarketStatus } from '../shared/market/types';
+import type { HealthFlushResult, HealthStatus } from '../shared/health/types';
+import type { PostApplyStatus } from '../shared/post-apply';
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   const response = (await ipcRenderer.invoke(channel, ...args)) as IpcEnvelope<T> | undefined;
@@ -42,6 +53,7 @@ const api: TuneSmithApi = {
 
   app: {
     info: () => invoke<AppInfo>(IPC_CHANNELS.appInfo),
+    memory: () => invoke<MemorySnapshot>(IPC_CHANNELS.appMemory),
     requestElevation: () => invoke<ElevationResult>(IPC_CHANNELS.appElevation),
   },
 
@@ -52,6 +64,8 @@ const api: TuneSmithApi = {
   presets: {
     list: () => invoke<PresetSummary[]>(IPC_CHANNELS.presetsList),
     plan: (presetId: string) => invoke<CompiledPlan>(IPC_CHANNELS.presetsPlan, { presetId }),
+    serviceDependencies: (presetId: string) =>
+      invoke<ServiceDependencyGraph>(IPC_CHANNELS.presetsServiceDependencies, { presetId }),
     openFolder: () => invoke<void>(IPC_CHANNELS.presetsOpenFolder),
   },
 
@@ -64,18 +78,48 @@ const api: TuneSmithApi = {
     sessions: () => invoke<SessionSummary[]>(IPC_CHANNELS.engineSessions),
     rollback: (sessionId: string) => invoke<RollbackReport>(IPC_CHANNELS.engineRollback, { sessionId }),
     restoreDefaults: () => invoke<RollbackReport[]>(IPC_CHANNELS.engineRestoreDefaults),
+    postApply: () => invoke<PostApplyStatus>(IPC_CHANNELS.enginePostApply),
+    onPostApply: (listener: (status: PostApplyStatus) => void) => {
+      const handler = (_event: unknown, payload: PostApplyStatus): void => listener(payload);
+      ipcRenderer.on(EVENT_CHANNELS.postApplyStatus, handler);
+      return () => {
+        ipcRenderer.removeListener(EVENT_CHANNELS.postApplyStatus, handler);
+      };
+    },
   },
 
   game: {
     status: () => invoke<GameStatus>(IPC_CHANNELS.gameStatus),
     setWatching: (enabled: boolean) => invoke<GameStatus>(IPC_CHANNELS.gameSetWatching, { enabled }),
     profiles: () => invoke<GameProfileSummary[]>(IPC_CHANNELS.gameProfiles),
+    libraries: (refresh = false) => invoke<GameLibraryScanResult>(IPC_CHANNELS.gameLibraries, { refresh }),
+    artwork: (games: ArtworkRequestItem[]) =>
+      invoke<GameArtworkBatch>(IPC_CHANNELS.gameArtwork, { games }),
+    openFolder: (folderPath: string) => invoke<void>(IPC_CHANNELS.gameOpenFolder, { path: folderPath }),
+    launch: (gameId: string) => invoke<GameLaunchResult>(IPC_CHANNELS.gameLaunch, { gameId }),
     stop: () => invoke<GameStatus>(IPC_CHANNELS.gameStop),
+    osd: () => invoke<OsdStatus>(IPC_CHANNELS.gameOsd),
+    setOsd: (enabled: boolean) => invoke<OsdStatus>(IPC_CHANNELS.gameOsdSet, { enabled }),
     onStatus: (listener: (status: GameStatus) => void) => {
       const handler = (_event: unknown, payload: GameStatus): void => listener(payload);
       ipcRenderer.on(EVENT_CHANNELS.gameStatus, handler);
       return () => {
         ipcRenderer.removeListener(EVENT_CHANNELS.gameStatus, handler);
+      };
+    },
+  },
+
+  health: {
+    status: () => invoke<HealthStatus>(IPC_CHANNELS.healthStatus),
+    check: () => invoke<HealthStatus>(IPC_CHANNELS.healthCheck),
+    acknowledge: () => invoke<HealthStatus>(IPC_CHANNELS.healthAcknowledge),
+    pin: (presetId: string | null) => invoke<HealthStatus>(IPC_CHANNELS.healthPin, { presetId }),
+    flushJournals: () => invoke<HealthFlushResult>(IPC_CHANNELS.healthFlushJournals),
+    onStatus: (listener: (status: HealthStatus) => void) => {
+      const handler = (_event: unknown, payload: HealthStatus): void => listener(payload);
+      ipcRenderer.on(EVENT_CHANNELS.healthStatus, handler);
+      return () => {
+        ipcRenderer.removeListener(EVENT_CHANNELS.healthStatus, handler);
       };
     },
   },

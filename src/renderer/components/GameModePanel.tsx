@@ -1,22 +1,25 @@
 import type { ReactNode } from 'react';
-import type { GameProfileSummary, GameStatus } from '../../shared/game/types';
+import type { OsdStatus } from '../../shared/game/osd';
+import type { GameLibraryScanResult, GameProfileSummary, GameStatus } from '../../shared/game/types';
 
 interface GameModePanelProps {
   status: GameStatus | null;
   profiles: GameProfileSummary[];
+  libraries: GameLibraryScanResult | null;
+  osd: OsdStatus | null;
   busy: boolean;
   onToggle: (enabled: boolean) => void;
   onStop: () => void;
+  onToggleOsd: (enabled: boolean) => void;
+  onRefreshLibraries: () => void;
 }
 
-function topologyLine(status: GameStatus): string | null {
-  const topology = status.topology;
-  if (topology === null) return null;
-  if (!topology.hybrid) return `${topology.logicalProcessors} logical processors (no hybrid split reported)`;
-  const fastest = Math.max(...topology.efficiencyClasses);
-  const performance = topology.efficiencyClasses.filter((value) => value === fastest).length;
-  return `${topology.logicalProcessors} logical processors · ${performance} performance · ${topology.logicalProcessors - performance} efficiency`;
-}
+const LIBRARY_SOURCE_LABEL: Record<string, string> = {
+  steam: 'Steam',
+  epic: 'Epic',
+  xbox: 'Xbox',
+  gog: 'GOG',
+};
 
 const CPU_SOURCE_LABEL: Record<string, string> = {
   'libre-hardware-monitor': 'LibreHardwareMonitor',
@@ -49,123 +52,209 @@ function telemetryLine(status: GameStatus): string | null {
   return parts.length === 0 ? null : parts.join(' · ');
 }
 
-export function GameModePanel({ status, profiles, busy, onToggle, onStop }: GameModePanelProps): ReactNode {
+export function GameModePanel({
+  status,
+  profiles,
+  libraries,
+  osd,
+  busy,
+  onToggle,
+  onStop,
+  onToggleOsd,
+  onRefreshLibraries,
+}: GameModePanelProps): ReactNode {
   const watching = status?.watching ?? false;
   const active = status?.active ?? null;
   const guard = status?.guard ?? null;
+  const topology = status?.topology ?? null;
+  const pendingRestore = status?.pendingRestore ?? null;
+  const osdMessage = osd?.message ?? null;
   const telemetry = status === null ? null : telemetryLine(status);
   const blocked = profiles.filter((profile) => profile.blocked).length;
+  const profileNames = new Map(profiles.map((profile) => [profile.id, profile.name]));
+  const detectedProfiles = profiles.filter((profile) => profile.installed).length;
 
   return (
-    <section className="panel">
-      <div className="section-head">
-        <h2>GAME MODE</h2>
-        <span className={`pill ${watching ? 'pill-ok' : 'pill-muted'}`}>{watching ? 'Watching' : 'Off'}</span>
+    <section className="panel game-mode">
+      <div className="panel-head game-mode-head">
+        <div>
+          <h2>GAME MODE</h2>
+          <p className="muted small">Focus-driven profiles. Every change is journaled before it is applied.</p>
+        </div>
+        <div className="mode-actions">
+          <button
+            type="button"
+            className={`button small ${watching ? 'button-ghost' : 'button-primary'}`}
+            disabled={busy}
+            onClick={() => onToggle(!watching)}
+          >
+            {watching ? 'Stop watching' : 'Start watching'}
+          </button>
+          {active !== null && (
+            <button type="button" className="button button-ghost small" disabled={busy} onClick={onStop}>
+              Restore now
+            </button>
+          )}
+          <button
+            type="button"
+            className="button button-ghost small"
+            disabled={busy || osd === null}
+            onClick={() => onToggleOsd(!(osd?.enabled ?? false))}
+          >
+            {osd?.enabled === true ? 'OSD off' : 'OSD on'}
+          </button>
+        </div>
       </div>
 
-      <p className="muted small">
-        Watches for a game taking focus, applies its profile, and restores everything when the game closes. Changes are
-        written to disk before they are applied, so a crash cannot leave a browser suspended.
-      </p>
-
-      <div className="row">
-        <button
-          type="button"
-          className={watching ? 'button button-ghost' : 'button'}
-          disabled={busy}
-          onClick={() => onToggle(!watching)}
-        >
-          {watching ? 'Stop watching' : 'Start watching'}
-        </button>
-        {active !== null && (
-          <button type="button" className="button button-ghost" disabled={busy} onClick={onStop}>
-            Restore now
-          </button>
-        )}
-        <span className="muted small">
-          {status === null
-            ? 'Loading…'
-            : `${status.profiles} profile(s) · polls every ${(status.pollMs / 1000).toFixed(1)}s`}
+      <div className="mode-meta">
+        <span>
+          <small>Watcher</small>
+          <strong className={watching ? 'mode-value-ok' : undefined}>{status === null ? 'Loading' : watching ? 'Armed' : 'Off'}</strong>
+        </span>
+        <span>
+          <small>Profiles</small>
+          <strong>{status === null ? '—' : `${status.profiles} loaded`}</strong>
+        </span>
+        <span>
+          <small>CPU</small>
+          <strong>{topology === null ? '—' : `${topology.physicalCores}C / ${topology.logicalProcessors}T`}</strong>
+        </span>
+        <span>
+          <small>OSD</small>
+          <strong className={osd?.visible === true ? 'mode-value-ok' : undefined}>
+            {osd === null ? '—' : osd.visible ? 'Visible' : osd.enabled ? 'Armed' : 'Off'}
+          </strong>
         </span>
       </div>
 
-      {status?.lastError != null && <p className="small badge-aggressive">Last error: {status.lastError}</p>}
-
-      {status?.pendingRestore != null && (
-        <p className="small badge-aggressive">
-          {status.pendingRestore.profileName} was not fully restored after a crash. Restart TuneSmith as administrator and
-          toggle game mode to retry.
+      {osdMessage !== null && <p className="mode-note">{osdMessage}</p>}
+      {status?.lastError != null && <p className="mode-alert">{status.lastError}</p>}
+      {pendingRestore !== null && (
+        <p className="mode-alert">
+          {pendingRestore.profileName} was not fully restored after a crash. Restart TuneSmith as administrator and toggle game
+          mode to retry.
         </p>
       )}
+
+      {guard?.status === 'trip' && <p className="mode-alert">Thermal guard: {guard.message}</p>}
+      {guard?.status === 'unavailable' && <p className="mode-note">{guard.message}</p>}
+      {guard?.status === 'ok' && guard.missing.length > 0 && (
+        <p className="mode-note">Guard inputs unavailable: {guard.missing.join(', ')}.</p>
+      )}
+      {telemetry !== null && <p className="mode-note">Telemetry: {telemetry}</p>}
 
       {active !== null && (
-        <div className="game-active">
-          <p>
-            <strong>{active.profileName}</strong> <span className="muted">· {active.exe}</span>
-            {active.pid !== null && <span className="muted"> · pid {active.pid}</span>}
-          </p>
-          <ul className="adjustments">
-            {active.adjustments.length === 0 && <li className="muted">No adjustments recorded.</li>}
-            {active.adjustments.map((adjustment, index) => (
-              <li key={`${adjustment.kind}-${adjustment.target}-${index}`}>
-                <span className={`pill ${adjustment.ok ? 'pill-ok' : 'pill-danger'}`}>
-                  {adjustment.ok ? 'applied' : 'skipped'}
-                </span>{' '}
-                {adjustment.kind} · {adjustment.target} — {adjustment.detail}
-                {adjustment.error !== undefined && <span className="muted"> ({adjustment.error})</span>}
+        <details className="panel-details">
+          <summary>
+            Session adjustments <span className="details-count">{active.adjustments.length}</span>
+          </summary>
+          <div className="details-body">
+            <ul className="adjustments">
+              {active.adjustments.length === 0 && <li className="muted">No adjustments recorded.</li>}
+              {active.adjustments.map((adjustment, index) => (
+                <li key={`${adjustment.kind}-${adjustment.target}-${index}`}>
+                  <span className={`pill ${adjustment.ok ? 'pill-ok' : 'pill-danger'}`}>
+                    {adjustment.ok ? 'applied' : 'skipped'}
+                  </span>{' '}
+                  {adjustment.kind} · {adjustment.target} — {adjustment.detail}
+                  {adjustment.error !== undefined && <span className="muted"> ({adjustment.error})</span>}
+                </li>
+              ))}
+            </ul>
+            {active.suspended.length > 0 && (
+              <p className="muted small">
+                Suspended: {active.suspended.map((process) => `${process.process} (${process.pid})`).join(', ')}
+              </p>
+            )}
+          </div>
+        </details>
+      )}
+
+      <details className="panel-details">
+        <summary>
+          Game library <span className="details-count">{libraries === null ? 'scanning' : `${libraries.games.length} title(s)`}</span>
+        </summary>
+        <div className="details-body">
+          <div className="details-actions">
+            <span className="muted small">
+              {libraries === null
+                ? 'Read-only scan in progress.'
+                : `${detectedProfiles} profile(s) matched · scanned ${new Date(libraries.scannedAt).toLocaleTimeString()}`}
+            </span>
+            <button type="button" className="button button-ghost small" disabled={busy || libraries === null} onClick={onRefreshLibraries}>
+              Rescan
+            </button>
+          </div>
+
+          {libraries !== null && libraries.errors.length > 0 && (
+            <ul className="mode-list muted small">
+              {libraries.errors.map((error) => (
+                <li key={`${error.source}-${error.message}`}>
+                  {LIBRARY_SOURCE_LABEL[error.source] ?? 'Library'} scan incomplete: {error.message}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <ul className="library-games">
+            {(libraries?.games ?? []).map((game) => (
+              <li key={game.id}>
+                <div className="row">
+                  <strong>{game.name}</strong>
+                  <span className="chip">{LIBRARY_SOURCE_LABEL[game.source] ?? game.source}</span>
+                  {game.profileIds.length > 0 ? (
+                    <span className="pill pill-ok">Profile detected</span>
+                  ) : (
+                    <span className="chip">No installed profile</span>
+                  )}
+                </div>
+                <p className="muted small library-path">
+                  <code className="signature">{game.executablePath ?? game.installDir}</code>
+                </p>
+                {game.profileIds.length > 0 && (
+                  <p className="muted small">Suggested: {game.profileIds.map((id) => profileNames.get(id) ?? id).join(', ')}</p>
+                )}
               </li>
             ))}
+            {libraries !== null && libraries.games.length === 0 && <li className="muted">No installed titles were detected.</li>}
           </ul>
-          {active.suspended.length > 0 && (
-            <p className="muted small">
-              Suspended: {active.suspended.map((process) => `${process.process} (${process.pid})`).join(', ')}
-            </p>
-          )}
         </div>
-      )}
+      </details>
 
-      {status !== null && topologyLine(status) !== null && <p className="muted small">CPU: {topologyLine(status)}</p>}
-
-      {telemetry !== null && <p className="muted small">Telemetry: {telemetry}</p>}
-
-      {guard?.status === 'unavailable' && <p className="muted small">{guard.message}</p>}
-
-      {guard?.status === 'ok' && guard.missing.length > 0 && (
-        <p className="muted small">Guard inputs unavailable: {guard.missing.join(', ')}.</p>
-      )}
-
-      {guard?.status === 'trip' && <p className="small badge-aggressive">Thermal guard: {guard.message}</p>}
-
-      {status !== null && status.packages.length > 0 && (
-        <p className="muted small">
-          Store packages:{' '}
-          {status.packages
-            .map((pkg) => `${pkg.familyName} (${pkg.executables.join(', ') || 'no executable in manifest'})`)
-            .join(' · ')}
-        </p>
-      )}
-
-      <ul className="game-profiles">
-        {profiles.map((profile) => (
-          <li key={profile.id}>
-            <div className="row">
-              <strong>{profile.name}</strong>
-              <code className="signature">{profile.exe || profile.packageFamilyName}</code>
-              {profile.blocked && <span className="pill pill-danger">Blocked</span>}
-            </div>
-            <p className="muted small">{profile.actions.join(' · ')}</p>
-            {profile.findings.length > 0 && (
-              <ul className="muted small">
-                {profile.findings.slice(0, 3).map((finding) => (
-                  <li key={finding}>{finding}</li>
-                ))}
-              </ul>
-            )}
-          </li>
-        ))}
-        {profiles.length === 0 && <li className="muted">No game profiles installed.</li>}
-        {blocked > 0 && <li className="muted small">{blocked} profile(s) would be refused on this machine.</li>}
-      </ul>
+      <details className="panel-details">
+        <summary>
+          Installed profiles <span className="details-count">{profiles.length}</span>
+        </summary>
+        <div className="details-body">
+          <ul className="game-profiles">
+            {profiles.map((profile) => (
+              <li key={profile.id}>
+                <div className="row">
+                  <strong>{profile.name}</strong>
+                  <code className="signature">{profile.exe || profile.packageFamilyName}</code>
+                  {profile.installed && <span className="pill pill-ok">Detected</span>}
+                  {profile.blocked && <span className="pill pill-danger">Blocked</span>}
+                </div>
+                {profile.installed && profile.detectedPath !== null && (
+                  <p className="muted small library-path">
+                    Found at <code className="signature">{profile.detectedPath}</code>
+                  </p>
+                )}
+                <p className="muted small">{profile.actions.join(' · ')}</p>
+                {profile.findings.length > 0 && (
+                  <ul className="mode-list muted small">
+                    {profile.findings.slice(0, 3).map((finding) => (
+                      <li key={finding}>{finding}</li>
+                    ))}
+                  </ul>
+                )}
+              </li>
+            ))}
+            {profiles.length === 0 && <li className="muted">No game profiles installed.</li>}
+            {blocked > 0 && <li className="muted small">{blocked} profile(s) would be refused on this machine.</li>}
+          </ul>
+        </div>
+      </details>
     </section>
   );
 }

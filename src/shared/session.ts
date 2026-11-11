@@ -152,6 +152,17 @@ export interface AppInfo {
   presetCount: number;
 }
 
+/** Read-only system memory sample used by the live dashboard. */
+export interface MemorySnapshot {
+  totalBytes: number;
+  availableBytes: number;
+  usedBytes: number;
+  /** 0..100, rounded to one decimal place. */
+  usedPercent: number;
+  pressure: 'optimal' | 'elevated' | 'critical';
+  sampledAt: string;
+}
+
 export type EnginePhase = 'preflight' | 'restore-point' | 'apply' | 'rollback' | 'done' | 'error';
 
 export interface EngineProgress {

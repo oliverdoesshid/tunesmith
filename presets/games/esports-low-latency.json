@@ -12,6 +12,11 @@
     "affinity": { "strategy": "performance-cores" },
     "priority": "High",
     "gpuPreference": "high-performance",
+    "network": {
+      "tcpAckFrequency": 1,
+      "tcpNoDelay": 1,
+      "interruptModeration": "disabled"
+    },
     "timerHold": true,
     "backgroundRules": [
       { "process": "chrome.exe", "action": "lower-priority", "priority": "Idle" },
@@ -21,6 +26,7 @@
   },
   "notes": [
     "On a CPU without efficiency cores the affinity plan falls back to every logical processor; the rest of the profile still applies.",
-    "Priorities are only lowered, never raised, so nothing is suspended while a match is in progress."
+    "Priorities are only lowered, never raised, so nothing is suspended while a match is in progress.",
+    "Network tuning is limited to the interface carrying an established TCP server flow; the adapter's interrupt-moderation property is skipped when the driver does not expose it."
   ]
 }

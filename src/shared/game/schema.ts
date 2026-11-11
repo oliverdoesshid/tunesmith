@@ -41,6 +41,20 @@ const backgroundRuleSchema = z.strictObject({
   priority: z.enum(['Idle', 'BelowNormal']).optional(),
 });
 
+export const gameNetworkSettingsSchema = z
+  .strictObject({
+    tcpAckFrequency: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
+    tcpNoDelay: z.union([z.literal(0), z.literal(1)]).optional(),
+    interruptModeration: z.enum(['enabled', 'disabled']).optional(),
+  })
+  .refine(
+    (value) =>
+      value.tcpAckFrequency !== undefined ||
+      value.tcpNoDelay !== undefined ||
+      value.interruptModeration !== undefined,
+    'A network action must change at least one value',
+  );
+
 const guardsSchema = z
   .strictObject({
     maxCpuTempC: z.number().int().min(60).max(105).optional(),
@@ -64,6 +78,7 @@ const actionsSchema = z.strictObject({
   affinity: affinitySchema.optional(),
   priority: z.enum(['Normal', 'AboveNormal', 'High']).optional(),
   gpuPreference: z.enum(['high-performance', 'power-saving']).optional(),
+  network: gameNetworkSettingsSchema.optional(),
   flushStandbyMemory: z.boolean().optional(),
   timerHold: z.boolean().optional(),
   backgroundRules: z.array(backgroundRuleSchema).max(GAME_LIMITS.maxBackgroundRules).optional(),

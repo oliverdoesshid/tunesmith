@@ -1,11 +1,12 @@
 /**
  * Production build.
  *
- * Three independent targets:
- *   1. main process  -> dist/main/index.cjs     (CommonJS, external: electron)
- *   2. preload       -> dist/preload/index.cjs  (CommonJS, sandbox-compatible)
- *   3. renderer      -> dist/renderer/**        (ESM + assets, via Vite)
- *   4. cli           -> dist/cli/index.cjs     (headless companion, CommonJS)
+ * Four independent targets:
+ *   1. main process  -> dist/main/index.cjs          (CommonJS, external: electron)
+ *   2. preload       -> dist/preload/index.cjs
+ *                       dist/preload/overlay.cjs     (sandbox-compatible)
+ *   3. renderer      -> dist/renderer/**             (ESM + assets, both HTML entries)
+ *   4. cli           -> dist/cli/index.cjs           (headless companion, CommonJS)
  *
  * Source maps are intentionally not emitted for the packaged app: they would ship
  * internal file paths to end users.
@@ -25,6 +26,12 @@ const shared = {
   target: 'node20',
   external: ['electron'],
   sourcemap: false,
+  // Production bundles are parsed at startup, so minification also reduces startup I/O.
+  // esbuild's DCE removes unused imports/exports and dead branches after tree-shaking.
+  minify: true,
+  treeShaking: true,
+  drop: ['debugger'],
+  charset: 'utf8',
   logLevel: 'warning',
   define: { 'process.env.NODE_ENV': '"production"' },
 };
@@ -42,6 +49,14 @@ async function buildPreload() {
     ...shared,
     entryPoints: [path.join(root, 'src/preload/index.ts')],
     outfile: path.join(dist, 'preload/index.cjs'),
+  });
+}
+
+async function buildOverlayPreload() {
+  await esbuild({
+    ...shared,
+    entryPoints: [path.join(root, 'src/preload/overlay.ts')],
+    outfile: path.join(dist, 'preload/overlay.cjs'),
   });
 }
 
@@ -69,10 +84,18 @@ async function main() {
   await rm(dist, { recursive: true, force: true });
   await buildMain();
   await buildPreload();
+  await buildOverlayPreload();
   await buildCli();
   await buildRenderer();
 
-  for (const rel of ['main/index.cjs', 'preload/index.cjs', 'cli/index.cjs', 'renderer/index.html']) {
+  for (const rel of [
+    'main/index.cjs',
+    'preload/index.cjs',
+    'preload/overlay.cjs',
+    'cli/index.cjs',
+    'renderer/index.html',
+    'renderer/overlay.html',
+  ]) {
     const s = await stat(path.join(dist, rel));
     if (s.size === 0) throw new Error(`build produced an empty artifact: ${rel}`);
     console.log(`  built  ${rel}  (${(s.size / 1024).toFixed(1)} kB)`);

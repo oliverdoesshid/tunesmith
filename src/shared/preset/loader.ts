@@ -7,13 +7,22 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { verifyPresetSignature } from '../../main/pipeline/integrity';
 import { z } from 'zod';
 import { formatZodIssues, PRESET_LIMITS, presetSchema, type FormattedIssue, type Preset } from './schema';
 import { evaluatePresetPolicy, type PolicyFinding } from './policy';
 
 export type TrustLevel = 'bundled-verified' | 'market-verified' | 'unverified';
 
-export type PresetFailureCode = 'read' | 'parse' | 'schema' | 'integrity' | 'duplicate' | 'too-large';
+export type PresetFailureCode =
+  | 'read'
+  | 'parse'
+  | 'schema'
+  | 'integrity'
+  | 'duplicate'
+  | 'too-large'
+  /** Detached Ed25519 signature missing, malformed or not produced by the pinned key. */
+  | 'ERR_INVALID_SIGNATURE';
 
 export interface PresetLoadFailure {
   file: string;
@@ -44,6 +53,8 @@ const indexSchema = z.strictObject({
       id: z.string().min(1).max(120),
       version: z.string().min(1).max(40),
       sha256: z.string().regex(/^[a-f0-9]{64}$/),
+      /** Optional base64 Ed25519 signature over the file bytes. */
+      signature: z.string().min(80).max(120).optional(),
     }),
   ),
 });
@@ -85,12 +96,24 @@ export interface FileLoadResult {
   failure: PresetLoadFailure | null;
 }
 
+export interface PresetLoadOptions {
+  /** Require a detached Ed25519 signature for indexed presets. */
+  requireSignature?: boolean;
+  /** Test/injection seam; production uses the pinned key from main/security/keys. */
+  publicKey?: string;
+  /** Index written by the marketplace installer (catalog signature checked at install). */
+  marketIndex?: boolean;
+}
+
+export interface DirectoryLoadOptions extends PresetLoadOptions {
+  requireSignatures?: boolean;
+}
+
 export async function loadPresetFile(
   absPath: string,
   entry: PresetIndexEntry | null,
   indexPresent: boolean,
-  /** Index written by the marketplace installer (signature checked at install time). */
-  marketIndex = false,
+  options: PresetLoadOptions = {},
 ): Promise<FileLoadResult> {
   const file = path.basename(absPath);
 
@@ -126,6 +149,27 @@ export async function loadPresetFile(
     };
   }
 
+  // Authenticity is checked before the Structural Zod gate: unsigned or tampered bytes
+  // must not be parsed as a preset at all, let alone evaluated by policy.
+  if (options.requireSignature === true && entry !== null) {
+    const signature = await verifyPresetSignature({
+      filePath: absPath,
+      bytes,
+      ...(entry.signature !== undefined ? { manifestSignature: entry.signature } : {}),
+      ...(options.publicKey !== undefined ? { publicKey: options.publicKey } : {}),
+    });
+    if (!signature.ok) {
+      return {
+        preset: null,
+        failure: {
+          file,
+          code: 'ERR_INVALID_SIGNATURE',
+          message: signature.message,
+        },
+      };
+    }
+  }
+
   const result = parsePreset(bytes.toString('utf8'));
   if (!result.ok) {
     return {
@@ -150,14 +194,22 @@ export async function loadPresetFile(
       preset: result.preset,
       file,
       sha256: digest,
-      trust: entry !== null ? (marketIndex ? 'market-verified' : 'bundled-verified') : 'unverified',
+      trust:
+        entry !== null
+          ? options.marketIndex === true
+            ? 'market-verified'
+            : 'bundled-verified'
+          : 'unverified',
       findings: evaluatePresetPolicy(result.preset),
     },
     failure: null,
   };
 }
 
-export async function loadPresetDirectory(dir: string): Promise<LoadResult> {
+export async function loadPresetDirectory(
+  dir: string,
+  options: DirectoryLoadOptions = {},
+): Promise<LoadResult> {
   const presets: LoadedPreset[] = [];
   const failures: PresetLoadFailure[] = [];
 
@@ -187,12 +239,12 @@ export async function loadPresetDirectory(dir: string): Promise<LoadResult> {
   const seen = new Map<string, string>();
   for (const file of files) {
     const entry = index?.presets.find((p) => p.file === file) ?? null;
-    const { preset, failure } = await loadPresetFile(
-      path.join(dir, file),
-      entry,
-      index !== null,
-      index?.generatedBy === 'tunesmith-marketplace',
-    );
+    const { preset, failure } = await loadPresetFile(path.join(dir, file), entry, index !== null, {
+      ...(options.requireSignature !== undefined ? { requireSignature: options.requireSignature } : {}),
+      ...(options.requireSignatures !== undefined ? { requireSignature: options.requireSignatures } : {}),
+      ...(options.publicKey !== undefined ? { publicKey: options.publicKey } : {}),
+      marketIndex: index?.generatedBy === 'tunesmith-marketplace',
+    });
     if (failure) {
       failures.push(failure);
       continue;

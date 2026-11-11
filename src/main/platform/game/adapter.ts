@@ -21,6 +21,7 @@ import { startTimerHold } from './timer';
 import { resolvePackage } from './packages';
 import { readTelemetry } from './telemetry';
 import { detectTopology } from './topology';
+import { applyGameNetwork, captureGameNetwork, inspectGameNetwork, restoreGameNetwork } from './network';
 
 export function createSystemGameAdapter(): GameAdapter {
   return {
@@ -38,5 +39,9 @@ export function createSystemGameAdapter(): GameAdapter {
     restoreGpuPreference,
     resolvePackage,
     readTelemetry,
+    inspectNetwork: inspectGameNetwork,
+    captureNetwork: captureGameNetwork,
+    applyNetwork: applyGameNetwork,
+    restoreNetwork: restoreGameNetwork,
   };
 }

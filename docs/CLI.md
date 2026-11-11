@@ -26,6 +26,18 @@ npm run cli -- restore
 After `npm install -g .` (or any global install), the same commands are available as
 `tunesmith-cli ...`.
 
+### Preset sources
+
+The CLI reads the same two directories as the desktop app, in the same order:
+
+1. bundled `presets/community` — every listed file must carry a valid Ed25519 signature;
+2. `%APPDATA%\TuneSmith\presets\community` — marketplace installs. These were verified
+   against the signed catalog (payload SHA-256 plus entry signature) before being written,
+   so they do not need a second per-file signature. `--user-data <dir>` moves this
+   directory, which is useful for scripted tests and portable installs.
+
+A bundled preset wins if both sources provide the same id, matching the GUI.
+
 ### Options
 
 | Option | Meaning |

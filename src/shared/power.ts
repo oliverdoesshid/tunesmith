@@ -16,7 +16,9 @@
  * - "Ultimate Performance" has no stable GUID (Windows duplicates it per machine), so
  *   it cannot be expressed as a fixed target.
  * - Hidden settings are excluded: `powercfg -query` does not report their current
- *   value, and the engine refuses to mutate anything it cannot first capture.
+ * - Hidden settings are excluded unless they can be read through the official
+ *   `PowerReadACValue` API. EPP and core-parking maximum are hidden from `powercfg -query`
+ *   on Windows 11, but their effective AC values are still readable through that API.
  */
 
 export const POWER_PLAN_IDS = ['balanced', 'high-performance', 'power-saver'] as const;
@@ -42,13 +44,15 @@ export const POWER_SETTING_IDS = [
   'processor-min-state',
   'processor-max-state',
   'core-parking-min-cores',
+  'core-parking-max-cores',
+  'energy-performance-preference',
   'usb-selective-suspend',
   'pcie-link-state',
   'disk-idle-timeout',
 ] as const;
 export type PowerSettingId = (typeof POWER_SETTING_IDS)[number];
 
-export type PowerValueKind = 'percent' | 'toggle' | 'enum' | 'seconds';
+export type PowerValueKind = 'percent' | 'toggle' | 'enum' | 'seconds' | 'epp';
 
 export interface PowerSettingMeta {
   subgroup: PowerSubgroupId;
@@ -57,6 +61,8 @@ export interface PowerSettingMeta {
   kind: PowerValueKind;
   min: number;
   max: number;
+  /** `powercfg -query` cannot report some processor settings; read those via powrprof. */
+  readVia?: 'powercfg' | 'power-api';
   /** Short explanation shown in the plan preview. */
   note: string;
 }
@@ -87,7 +93,27 @@ export const POWER_SETTINGS: Record<PowerSettingId, PowerSettingMeta> = {
     kind: 'percent',
     min: 0,
     max: 100,
-    note: '100% keeps every core unparked, which reduces scheduling jitter.',
+    note: '100% keeps every core unparked, which reduces scheduling jitter. This is system-wide, not per-game.',
+  },
+  'core-parking-max-cores': {
+    subgroup: 'processor',
+    guid: 'ea062031-0e34-4ff1-9b6d-eb1059334028',
+    label: 'Processor performance core parking max cores',
+    kind: 'percent',
+    min: 0,
+    max: 100,
+    readVia: 'power-api',
+    note: 'Caps the percentage of cores that may stay unparked. Pair with min cores 100 to keep every core available; this is system-wide and raises idle power.',
+  },
+  'energy-performance-preference': {
+    subgroup: 'processor',
+    guid: '36687f9e-e3a5-4dbf-b1dc-15eb381c6863',
+    label: 'Energy Performance Preference (EPP)',
+    kind: 'epp',
+    min: 0,
+    max: 100,
+    readVia: 'power-api',
+    note: '0 biases the CPU toward performance and 100 toward energy savings. Windows applies this through HWP/Speed Shift when the CPU and firmware expose it; it is a frequency/energy hint, not thread placement.',
   },
   'usb-selective-suspend': {
     subgroup: 'usb',
@@ -135,5 +161,11 @@ export function describePowerSetting(setting: PowerSettingId, value: number): st
       return String(value);
     case 'seconds':
       return value === 0 ? 'never' : `${value}s`;
+    case 'epp': {
+      const hex = `0x${value.toString(16).toUpperCase().padStart(2, '0')}`;
+      if (value === 0) return `0% (${hex}) — maximum performance`;
+      if (value === 100) return `100% (${hex}) — maximum energy savings`;
+      return `${value}% (${hex})`;
+    }
   }
 }

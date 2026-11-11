@@ -20,6 +20,15 @@ export function describeActions(profile: GameProfile): string[] {
   if (actions.gpuPreference !== undefined) {
     labels.push(actions.gpuPreference === 'high-performance' ? 'GPU: High performance' : 'GPU: Power saving');
   }
+  if (actions.network !== undefined) {
+    const parts: string[] = [];
+    if (actions.network.tcpAckFrequency !== undefined) parts.push(`TCP ACK ${actions.network.tcpAckFrequency}`);
+    if (actions.network.tcpNoDelay !== undefined) parts.push(`TCP no-delay ${actions.network.tcpNoDelay}`);
+    if (actions.network.interruptModeration !== undefined) {
+      parts.push(`NIC moderation ${actions.network.interruptModeration}`);
+    }
+    labels.push(`Network: ${parts.join(', ')} (game interface only)`);
+  }
   if (actions.flushStandbyMemory === true) labels.push('Memory: purge standby list');
   if (actions.timerHold === true) labels.push('Timer: hold 0.5 ms resolution while playing');
 

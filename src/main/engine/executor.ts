@@ -21,8 +21,9 @@ import type {
   RestorePointInfo,
   RollbackReport,
 } from '../../shared/session';
+import { SessionManager } from '../journal/sessionManager';
 import type { StepAdapter } from './adapter';
-import { isRestorable, JournalStore, newSessionManifest } from './journal';
+import type { JournalStore } from './journal';
 import type { SessionLock } from './lock';
 
 export interface ExecutorDeps {
@@ -41,11 +42,19 @@ export interface ApplyOptions {
 
 export class Executor {
   private readonly deps: ExecutorDeps;
+  /** Journal lifecycle and crash recovery; shared with startup detection. */
+  readonly sessions: SessionManager;
   /** Assigned by the IPC layer once a window exists. */
   onProgress: ((progress: EngineProgress) => void) | null = null;
 
   constructor(deps: ExecutorDeps) {
     this.deps = deps;
+    this.sessions = new SessionManager({
+      journal: deps.journal,
+      lock: deps.lock,
+      adapter: deps.adapter,
+      ...(deps.log !== undefined ? { log: deps.log } : {}),
+    });
   }
 
   private progress(progress: EngineProgress): void {
@@ -68,18 +77,16 @@ export class Executor {
     let appliedSteps = 0;
 
     try {
-      await this.deps.journal.createSession(
-        newSessionManifest({
-          id: sessionId,
-          presetId: plan.presetId,
-          presetName: plan.presetName,
-          presetVersion: plan.presetVersion,
-          presetRisk: plan.risk,
-          signature: plan.signature,
-          appVersion: this.deps.appVersion,
-          stepCount: plan.steps.length,
-        }),
-      );
+      await this.sessions.begin({
+        id: sessionId,
+        presetId: plan.presetId,
+        presetName: plan.presetName,
+        presetVersion: plan.presetVersion,
+        presetRisk: plan.risk,
+        signature: plan.signature,
+        appVersion: this.deps.appVersion,
+        stepCount: plan.steps.length,
+      });
 
       const restorePoint = await this.ensureRestorePoint(sessionId, plan);
       if (plan.restorePoint === 'required' && !restorePoint.ok) {
@@ -235,7 +242,7 @@ export class Executor {
       };
 
       try {
-        await this.deps.journal.append(sessionId, record);
+        await this.sessions.append(sessionId, record);
       } catch (err) {
         // No durable record means no permission to mutate.
         return { label: step.label, error: `journal write failed, refusing to continue: ${describeError(err)}` };
@@ -243,7 +250,7 @@ export class Executor {
 
       try {
         await this.deps.adapter.apply(step, before);
-        await this.deps.journal.append(sessionId, { type: 'outcome', seq, status: 'applied' });
+        await this.sessions.append(sessionId, { type: 'outcome', seq, status: 'applied' });
         applied += 1;
         onApplied(applied);
         this.progress({
@@ -255,7 +262,7 @@ export class Executor {
         });
       } catch (err) {
         const message = describeError(err);
-        await this.deps.journal.append(sessionId, { type: 'outcome', seq, status: 'failed', error: message });
+        await this.sessions.append(sessionId, { type: 'outcome', seq, status: 'failed', error: message });
         this.progress({
           phase: 'apply',
           message: step.label,
@@ -271,71 +278,16 @@ export class Executor {
   }
 
   async rollback(sessionId: string): Promise<RollbackReport> {
-    await this.deps.lock.acquire(`rollback:${sessionId}`);
-    try {
-      let manifest: Awaited<ReturnType<JournalStore['readManifest']>>;
-      try {
-        manifest = await this.deps.journal.readManifest(sessionId);
-      } catch {
-        throw new TuneSmithError('unavailable', `Session ${sessionId} was not found.`);
-      }
-
-      const report = await this.rollbackInside(sessionId);
-      await this.deps.journal.updateManifest(sessionId, {
-        status: report.ok ? 'rolled-back' : 'rollback-failed',
-        finishedAt: new Date().toISOString(),
-        notes: [
-          ...manifest.notes,
-          report.ok ? `Rolled back ${report.restored} step(s).` : `Rollback incomplete: ${report.errors.join('; ')}`,
-        ],
-      });
-      return report;
-    } finally {
-      await this.deps.lock.release();
-      await this.deps.journal.close(sessionId);
-    }
+    return this.sessions.restore(sessionId, (entry, current, total) => {
+      this.progress({ phase: 'rollback', message: entry.label, current, total });
+    });
   }
 
   /** Undo every applied or announced-but-unfinished step, newest first. */
   private async rollbackInside(sessionId: string): Promise<RollbackReport> {
-    const entries = await this.deps.journal.entries(sessionId);
-
-    // `pending` entries were announced but have no outcome: after a crash we cannot
-    // know whether the mutation landed, so we restore them as if it did. `failed`
-    // entries are included too, because an action may have failed after its first
-    // system call already succeeded.
-    const targets = entries.filter((e) => isRestorable(e) && e.rolledBack !== true).sort((a, b) => b.seq - a.seq);
-
-    const total = targets.length;
-    let restored = 0;
-    const errors: string[] = [];
-
-    for (const [index, entry] of targets.entries()) {
-      this.progress({ phase: 'rollback', message: entry.label, current: index + 1, total });
-      try {
-        await this.deps.adapter.restore(entry.before);
-        await this.deps.journal.append(sessionId, { type: 'rollback', seq: entry.seq, ok: true });
-        restored += 1;
-      } catch (err) {
-        const message = describeError(err);
-        await this.deps.journal.append(sessionId, { type: 'rollback', seq: entry.seq, ok: false, error: message });
-        errors.push(`${entry.label}: ${message}`);
-      }
-    }
-
-    return {
-      sessionId,
-      restored,
-      failed: errors.length,
-      errors,
-      ok: errors.length === 0,
-      message:
-        errors.length === 0
-          ? restored === 0
-            ? 'Nothing needed restoring.'
-            : `Restored ${restored} change(s) to their original values.`
-          : `Restored ${restored} change(s), ${errors.length} failed. See the session log.`,
-    };
+    return this.sessions.restoreEntries(sessionId, (entry, current, total) => {
+      this.progress({ phase: 'rollback', message: entry.label, current, total });
+    });
   }
 
   /** "Restore to Default": roll back every session that still has changes on the machine. */
@@ -363,10 +315,12 @@ export class Executor {
 
   /** Sessions that were cut off mid-apply and still hold unrolled changes. */
   async interruptedSessions(): Promise<{ id: string; presetName: string; createdAt: string }[]> {
-    const sessions = await this.deps.journal.sessionsNeedingRollback();
-    return sessions
-      .filter((s) => s.status === 'applying')
-      .map((s) => ({ id: s.id, presetName: s.presetName, createdAt: s.createdAt }));
+    const interrupted = await this.sessions.scanInterrupted();
+    return interrupted.map((session) => ({
+      id: session.id,
+      presetName: session.presetName,
+      createdAt: session.createdAt,
+    }));
   }
 }
 

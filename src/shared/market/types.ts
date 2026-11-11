@@ -63,6 +63,15 @@ export interface TelemetryStats {
   recoveryRate: number;
 }
 
+export interface MarketCompatibility {
+  /** True only when the preset may run on this machine and no policy block applies. */
+  applicable: boolean;
+  /** 0..1 compatibility score from the real preset compiler. */
+  score: number;
+  blocked: boolean;
+  reasons: string[];
+}
+
 export interface MarketEntryView {
   id: string;
   version: string;
@@ -76,6 +85,7 @@ export interface MarketEntryView {
   publishedAt: string;
   ratings: MarketRatings;
   safety: SafetyScore;
+  compatibility: MarketCompatibility;
   stats: TelemetryStats;
   installedVersion: string | null;
   updateAvailable: boolean;

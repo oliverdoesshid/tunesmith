@@ -8,7 +8,7 @@
  * A crashed session can leave the directory behind, so a stale holder (older than
  * `staleMs`) is broken once, loudly logged, and replaced.
  */
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { TuneSmithError } from '../../shared/errors';
 
@@ -24,7 +24,9 @@ export class SessionLock {
   private held = false;
 
   constructor(root: string, staleMs = 10 * 60 * 1000) {
-    this.dir = path.join(root, 'engine.lock');
+    // The lock lives beside the session directories, matching the documented layout
+    // `sessions/lock`. `root` is the Electron user-data directory / CLI --user-data.
+    this.dir = path.join(root, 'sessions', 'lock');
     this.staleMs = staleMs;
   }
 
@@ -38,6 +40,10 @@ export class SessionLock {
   }
 
   async acquire(reason: string): Promise<void> {
+    // `sessions/` normally exists because the journal creates it, but preflight can
+    // acquire before the first session. Create the parent so the first mkdir is the
+    // actual mutex attempt rather than an ENOENT failure.
+    await mkdir(path.dirname(this.dir), { recursive: true });
     try {
       await mkdir(this.dir);
     } catch (err) {
@@ -45,8 +51,8 @@ export class SessionLock {
       if (code !== 'EEXIST') throw err;
 
       const holder = await this.currentHolder();
-      const ageMs = holder === null ? Number.POSITIVE_INFINITY : Date.now() - Date.parse(holder.startedAt);
-      if (Number.isFinite(ageMs) && ageMs < this.staleMs) {
+      const ageMs = await this.lockAgeMs(holder);
+      if (ageMs < this.staleMs) {
         throw new TuneSmithError(
           'locked',
           'Another tuning session is already running.',
@@ -54,6 +60,9 @@ export class SessionLock {
         );
       }
 
+      console.warn(
+        `[lock] breaking stale lock at ${this.dir} (${holder === null ? 'missing holder record' : `pid ${holder.pid} since ${holder.startedAt}`}); older than ${this.staleMs}ms`,
+      );
       await rm(this.dir, { recursive: true, force: true });
       await mkdir(this.dir);
     }
@@ -61,6 +70,25 @@ export class SessionLock {
     const holder: LockHolder = { pid: process.pid, startedAt: new Date().toISOString(), reason };
     await writeFile(path.join(this.dir, 'holder.json'), `${JSON.stringify(holder, null, 2)}\n`, 'utf8');
     this.held = true;
+  }
+
+  /**
+   * Age of the lock. A process can die between `mkdir` and writing `holder.json`, so a
+   * missing holder is not automatically stale: fall back to the directory's mtime.
+   * Only a genuinely old lock is broken, which closes the window where two writers
+   * could both decide an empty lock directory is abandoned.
+   */
+  private async lockAgeMs(holder: LockHolder | null): Promise<number> {
+    if (holder !== null) {
+      const started = Date.parse(holder.startedAt);
+      return Number.isFinite(started) ? Date.now() - started : Number.POSITIVE_INFINITY;
+    }
+    try {
+      const info = await stat(this.dir);
+      return Date.now() - info.mtimeMs;
+    } catch {
+      return Number.POSITIVE_INFINITY;
+    }
   }
 
   async release(): Promise<void> {

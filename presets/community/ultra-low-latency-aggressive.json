@@ -69,6 +69,8 @@
             { "setting": "processor-min-state", "value": 100 },
             { "setting": "processor-max-state", "value": 100 },
             { "setting": "core-parking-min-cores", "value": 100 },
+            { "setting": "core-parking-max-cores", "value": 100 },
+            { "setting": "energy-performance-preference", "value": 0 },
             { "setting": "usb-selective-suspend", "value": 0 },
             { "setting": "pcie-link-state", "value": 0 }
           ]

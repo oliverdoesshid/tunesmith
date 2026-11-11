@@ -71,6 +71,14 @@ export async function readValue(hive: RegistryHive, pathValue: string, valueName
   return snapshot;
 }
 
+/** Key-presence probe used by the health watchdog (e.g. servicing RebootPending keys). */
+export async function keyExists(hive: RegistryHive, pathValue: string): Promise<boolean> {
+  const result = await runExe('reg.exe', ['query', keyPath(hive, pathValue)]);
+  if (result.code === 0) return true;
+  if (/unable to find/i.test(result.stderr)) return false;
+  throw new TuneSmithError('capture-failed', `Could not query ${pathValue}`, oneLine(result.stderr));
+}
+
 export async function writeValue(
   hive: RegistryHive,
   pathValue: string,
