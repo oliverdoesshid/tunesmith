@@ -29,9 +29,12 @@ why it is versioned.
 
 ## Status
 
-Foundational skeleton — architecture and the safety-critical core are complete and tested.
-It is not yet a shippable consumer product: preset distribution is not signed, there is no
-auto-update, and the UI has no settings screen.
+**v0.1.0 release preview.** The safety-critical core, signed preset marketplace, game profiles
+and desktop workbench are implemented and tested. This build is intended for supervised testing
+on Windows 10/11 rather than unattended consumer deployment: the installer is unsigned, there is
+no auto-update or settings screen, and a stock build ships without a marketplace curator key.
+System mutations are journaled and reversible, but live apply/rollback and game sessions should
+be tested on a disposable account or VM first.
 
 ## Requirements
 
@@ -39,6 +42,17 @@ auto-update, and the UI has no settings screen.
 - Node.js 20.11+
 - Administrator rights to **apply** presets (browsing works unelevated)
 - Elevation or membership in `Performance Log Users` for OSD frame rates. Without it, the OSD still shows the active profile and available temperatures, and labels FPS as unavailable.
+
+## Install (Windows)
+
+Download the latest `TuneSmith Setup 0.1.0.exe` from the
+[GitHub releases page](https://github.com/oliverdoesshid/tunesmith/releases/latest) and run it.
+The installer is not code-signed, so Windows SmartScreen may show an "Unknown publisher"
+warning. Verify the SHA-256 published with the release before running it.
+
+TuneSmith can browse and preview unelevated. Applying system changes needs administrator
+rights; the app offers a single UAC relaunch rather than requiring the whole session to start
+elevated.
 
 ## Quick start
 
@@ -260,8 +274,11 @@ services (Defender, firewall, update, audio, RPC, Event Log, SCM/WMI).
   supervised test.
 - **The standby-memory purge is shipped off** in every bundled profile; it needs elevation
   and usually makes load times worse.
-- **Preset provenance is integrity-checked, not signed.** sha256 against `index.json` detects
-  corruption and casual tampering; it does not prove authorship. See `docs/SECURITY-MODEL.md` §4.
+- **Preset provenance has two layers.** Bundled presets are covered by `index.json` SHA-256
+  digests and detached Ed25519 signatures verified against the pinned key. Marketplace catalogs
+  and entries carry their own Ed25519 signatures and are refused without a configured key ring.
+  A stock build has no curator key, so the marketplace stays closed. See
+  `docs/SECURITY-MODEL.md` §4.
 - **Process priority is volatile.** It applies until the target process restarts; the UI labels
   it as non-persistent.
 - **The mutation paths have not been executed against a live host during development.** Only
@@ -278,9 +295,9 @@ services (Defender, firewall, update, audio, RPC, Event Log, SCM/WMI).
 - **Recovery is reviewed, not silent.** The pinned-preset action opens the normal plan
   preview and consent flow; an aggressive or restricted preset still needs the same
   acknowledgements, and an active game session must be stopped first.
-- **The only outbound request is the optional SteamGridDB artwork lookup.** Preset application
-  never fetches data; the marketplace and its opt-in telemetry are separate and documented.
-  There is no auto-update.
+- **Outbound traffic is limited to three explicit paths.** They are the optional SteamGridDB
+  artwork lookup, refresh of the configured signed marketplace catalog, and telemetry only after
+  the user opts in. Preset application itself never fetches data, and there is no auto-update.
 
 ## Verification
 
@@ -304,6 +321,6 @@ the host: build `26300.9711`, all four file hashes, servicing state, 98 ms, no w
 
 ## Next steps
 
-Signed preset distribution (Ed25519 over the manifest), a settings screen, dry-run reads of
-current values in the preview, and an ETW-based before/after measurement so a preset's claim can
-be checked rather than trusted.
+A curator-signed default marketplace catalog and key-rotation plan, a settings screen,
+auto-update, dry-run reads of current values in the preview, and an ETW-based before/after
+measurement so a preset's claim can be checked rather than trusted.

@@ -68,6 +68,7 @@
       "dist/cli/**/*",
       "presets/**/*",
       "package.json",
+      "LICENSE",
       "!**/*.map",
       "!**/*.d.ts",
       "!node_modules/**/*"

@@ -20,8 +20,9 @@ The renderer is treated as hostile even though we wrote it: it renders community
 text. The preload exposes named methods only — never a generic `invoke(channel, ...)` — so a
 compromised renderer inherits the exact capability list in `TuneSmithApi`, not the IPC surface.
 
-The only outbound request is the optional SteamGridDB artwork lookup. It is issued by main, uses
-a key that never crosses the bridge, and returns only `ts-art://` URLs served from the local
+Outbound requests are limited to the optional SteamGridDB artwork lookup, a refresh of the
+configured signed marketplace catalog, and opt-in telemetry. They are issued by main; credentials
+and keys never cross the bridge, and artwork returns only `ts-art://` URLs served from the local
 cache.
 
 ## 2. Assets
@@ -46,7 +47,7 @@ cache.
 | T2 | Preset writes a persistence key (`Run`, `Winlogon`, `IFEO`, `AppInit`) | prefix **and** pattern denylist (`\CurrentVersion\Run*` catches HKCU, HKLM and WOW6432Node mirrors); blocked regardless of risk tier | low |
 | T3 | Preset disables Defender/firewall/update/audio | protected-service map with per-service reasons; hard block | low |
 | T4 | Preset causes a boot loop | `Session Manager`, `Services`, `Class`, `SafeBoot`, `CI`, `DeviceGuard` blocked; driver config out of scope; restore point + journal | medium (boot-time keys outside the vocabulary are not reachable, but a legitimate-looking tweak can still degrade stability) |
-| T5 | Malicious preset smuggled into the library | index with sha256 per file; unlisted file ⇒ integrity failure; duplicate ids rejected | **high** — see §4, the digest is not a signature |
+| T5 | Malicious preset smuggled into the library | index with SHA-256 per file; unlisted files rejected; bundled and marketplace signatures verified against pinned keys; duplicate ids rejected | medium — see §4, a stock build ships without a marketplace curator key |
 | T6 | Renderer XSS → privilege escalation | `contextIsolation`, `sandbox`, no `nodeIntegration`, strict CSP, navigation/window/webview denial, permission denial, sender check, zod re-validation | low |
 | T7 | Two sessions interleave | `mkdir` lock with holder record and stale takeover | low |
 | T8 | Crash mid-apply leaves the machine half-tuned | durable-before-mutate, append-only journal, conservative recovery rollback | low |
@@ -68,23 +69,27 @@ cache.
 | T22 | OSD “frame monitor” becomes an injection/hooking vector | no DLL, no hook, no game-memory access; read-only ETW present events from a static child body, filtered by the already-validated active pid; malformed lines rejected | low (ETW is an observation surface, not a write path) |
 | T23 | Dependency preview is used to read or mutate arbitrary services | sender check + zod; only a preset id crosses the bridge; main compiles the plan and reads the fixed SCM subtree with a static script; rows are bounded and normalised; read-only, no executor path | low |
 
-## 4. Provenance — the honest gap
+## 4. Provenance: integrity plus signatures
 
-The current build verifies **integrity**: each preset file's sha256 must match the reviewed
-index, and a file absent from the index is rejected. That detects corruption and casual
-tampering, and it makes "a preset appeared in the folder" impossible.
+Bundled presets are loaded with both checks enabled. A file must appear in `index.json`, its
+SHA-256 must match, and a detached Ed25519 signature over the exact bytes must verify against
+the pinned `PRESET_SIGNING_PUBLIC_KEY`. The signature is checked before the structural parser
+sees the file.
 
-It does **not** prove authorship. Anyone who can rewrite both the file and `index.json` can
-rewrite the digest. Production distribution needs:
+Marketplace entries add a second signed layer:
 
-1. **Ed25519 signature over the manifest** (`index.json` + digests), public key pinned in the
-   app binary.
-2. **Key rotation** with a signed rotation statement.
-3. **HTTPS-only fetch** with certificate validation, and a local cache that re-verifies
-   signatures on every load.
+- the publisher signs the canonical catalog, and the client refuses an unknown `keyId`;
+- each entry carries a detached Ed25519 signature over the SHA-256 of its canonical payload;
+- the key ring comes from `TUNESMITH_MARKET_KEYS` or `market/config.json`, and is empty by
+  default so the marketplace fails closed;
+- fetches are HTTPS-only (loopback HTTP for development), and main re-verifies the payload and
+  entry before writing canonical bytes into the user preset directory.
 
-The loader already models trust as a value (`bundled-verified` | `unverified`) rather than a
-boolean, so adding a signature check is a change to one stage, not to the pipeline.
+A stock build therefore has no marketplace curator key. That is intentional: verification is
+implemented, but publishing a default catalog is still an operational step. Editing both a
+bundled preset and its local digest cannot forge the pinned signature; editing a marketplace
+entry cannot forge the publisher signature without its private key. Key rotation and a hosted
+default catalog remain release work, not gaps in the verifier.
 
 ## 5. Privilege model
 
