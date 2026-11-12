@@ -125,7 +125,7 @@ publish a non-draft GitHub release, upload `TuneSmith-Setup-<version>.exe` and a
 then explicitly publish the tag release (recovering a draft left by an interrupted run). The
 workflow needs `contents: write`; the build is unsigned unless a Windows signing certificate is
 configured. Packaged builds read the GitHub provider from the generated `app-update.yml`; see
-`docs/UPDATER.md` for the runtime flow and limitations.
+`docs/UPDATER.md` for the runtime flow and limitations. Release history: [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Commands
 
@@ -156,6 +156,7 @@ and keeps three archives (`tunesmith.1.log` through `tunesmith.3.log`).
 ## Layout
 
 ```
+CHANGELOG.md            release history and per-version change lists
 presets/community/      shipped presets + index.json (sha256 per file)
 presets/games/          per-game runtime profiles
 market/                 GitHub Pages storefront + generated static catalog
