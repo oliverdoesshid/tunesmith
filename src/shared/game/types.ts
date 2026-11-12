@@ -118,6 +118,54 @@ export interface GameNetworkApplyResult {
   message: string;
 }
 
+export type InterruptAffinityDeviceKind = 'gpu' | 'nvme' | 'network';
+
+/** A PCI device whose interrupt affinity the engine may pin. */
+export interface GameInterruptAffinityDevice {
+  /** Runtime PnP instance id, e.g. `PCI\VEN_10DE&DEV_2504\...`. */
+  instanceId: string;
+  kind: InterruptAffinityDeviceKind;
+  /** Friendly device name for the session log; never used as a path. */
+  label: string;
+  /** PnP service, e.g. `stornvme`; informational. */
+  service: string | null;
+}
+
+export type InterruptAffinityValueType = 'REG_DWORD' | 'REG_QWORD' | 'REG_BINARY';
+
+/** Exact prior state of one registry value, captured before the policy is written. */
+export interface InterruptAffinityValueState {
+  existed: boolean;
+  valueType?: InterruptAffinityValueType;
+  /** Decimal for DWORD/QWORD, uppercase little-endian hex for BINARY. */
+  data?: string;
+}
+
+export interface GameInterruptAffinityDeviceState {
+  device: GameInterruptAffinityDevice;
+  /** `Affinity Policy\DevicePolicy`; only a reported REG_DWORD is accepted. */
+  policy: InterruptAffinityValueState;
+  /** `Affinity Policy\AssignmentSetOverride`; the prior processor mask. */
+  assignment: InterruptAffinityValueState;
+}
+
+/** Durable game-session snapshot written before any interrupt policy is changed. */
+export interface GameInterruptAffinitySnapshot {
+  capturedAt: string;
+  /** Hex mask for the selected processors, for the UI/log. */
+  mask: string;
+  cores: number[];
+  devices: GameInterruptAffinityDeviceState[];
+}
+
+export interface GameInterruptAffinityApplyResult {
+  /** True when at least one device's policy was written. */
+  ok: boolean;
+  applied: number;
+  skipped: number;
+  message: string;
+}
+
 /**
  * Thermal / power safety guards. A trip ends the session (everything is restored) and
  * suppresses re-activation for `cooldownSeconds`, because re-applying aggressive tuning
@@ -285,6 +333,7 @@ export type AdjustmentKind =
   | 'priority'
   | 'gpu-preference'
   | 'network'
+  | 'interrupt-affinity'
   | 'memory-flush'
   | 'background-priority'
   | 'background-suspend'
@@ -302,6 +351,8 @@ export interface AppliedAdjustment {
 export interface SuspendedProcess {
   pid: number;
   process: string;
+  /** True when the automatic Cryo-Freeze layer, not a profile rule, suspended it. */
+  cryoFreeze?: boolean;
 }
 
 export interface GameSessionView {
@@ -322,6 +373,10 @@ export interface GameSessionView {
 
 export interface GameStatus {
   watching: boolean;
+  /** Automatic background suspension is armed for the next game session. */
+  cryoFreeze: boolean;
+  /** Device interrupt-affinity staging is armed for the next game session. */
+  interruptAffinity: boolean;
   phase: GamePhase;
   watcherHealthy: boolean;
   active: GameSessionView | null;
@@ -339,7 +394,30 @@ export interface GameStatus {
   pollMs: number;
 }
 
-export type GameLibrarySource = 'steam' | 'epic' | 'xbox' | 'gog';
+export type GameLibrarySource = 'steam' | 'epic' | 'xbox' | 'gog' | 'manual';
+export type GamePathPickKind = 'folder' | 'executable';
+
+/** A native-picker result. The token is the only thing the renderer may submit back. */
+export interface PickedGamePath {
+  token: string;
+  path: string;
+  kind: GamePathPickKind;
+}
+
+/** A local title the automatic launcher scan could not discover. */
+export interface ManualGameInput {
+  name: string;
+  installDir: string;
+  executablePath: string;
+}
+
+/** Renderer request: paths are redeemed from short-lived native-picker tokens in main. */
+export interface ManualGameAddRequest {
+  name: string;
+  installDirToken: string;
+  executableToken: string;
+}
+
 export interface DiscoveredExecutable {
   /** Bare image name, e.g. `Cyberpunk2077.exe`. */
   name: string;
@@ -347,7 +425,7 @@ export interface DiscoveredExecutable {
   path: string;
 }
 
-/** One installed title found by the read-only library scanner. */
+/** One installed title found by the library scanner or added manually. */
 export interface DiscoveredGame {
   /** Stable per-source key, e.g. `steam:1091500`. */
   id: string;

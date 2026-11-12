@@ -1,25 +1,18 @@
 import type { ReactNode } from 'react';
 import type { OsdStatus } from '../../shared/game/osd';
-import type { GameLibraryScanResult, GameProfileSummary, GameStatus } from '../../shared/game/types';
+import type { GameProfileSummary, GameStatus } from '../../shared/game/types';
 
 interface GameModePanelProps {
   status: GameStatus | null;
   profiles: GameProfileSummary[];
-  libraries: GameLibraryScanResult | null;
   osd: OsdStatus | null;
   busy: boolean;
   onToggle: (enabled: boolean) => void;
   onStop: () => void;
+  onToggleCryoFreeze: (enabled: boolean) => void;
+  onToggleInterruptAffinity: (enabled: boolean) => void;
   onToggleOsd: (enabled: boolean) => void;
-  onRefreshLibraries: () => void;
 }
-
-const LIBRARY_SOURCE_LABEL: Record<string, string> = {
-  steam: 'Steam',
-  epic: 'Epic',
-  xbox: 'Xbox',
-  gog: 'GOG',
-};
 
 const CPU_SOURCE_LABEL: Record<string, string> = {
   'libre-hardware-monitor': 'LibreHardwareMonitor',
@@ -55,15 +48,17 @@ function telemetryLine(status: GameStatus): string | null {
 export function GameModePanel({
   status,
   profiles,
-  libraries,
   osd,
   busy,
   onToggle,
   onStop,
+  onToggleCryoFreeze,
+  onToggleInterruptAffinity,
   onToggleOsd,
-  onRefreshLibraries,
 }: GameModePanelProps): ReactNode {
   const watching = status?.watching ?? false;
+  const cryoFreeze = status?.cryoFreeze ?? false;
+  const interruptAffinity = status?.interruptAffinity ?? false;
   const active = status?.active ?? null;
   const guard = status?.guard ?? null;
   const topology = status?.topology ?? null;
@@ -71,8 +66,6 @@ export function GameModePanel({
   const osdMessage = osd?.message ?? null;
   const telemetry = status === null ? null : telemetryLine(status);
   const blocked = profiles.filter((profile) => profile.blocked).length;
-  const profileNames = new Map(profiles.map((profile) => [profile.id, profile.name]));
-  const detectedProfiles = profiles.filter((profile) => profile.installed).length;
 
   return (
     <section className="panel game-mode">
@@ -98,6 +91,34 @@ export function GameModePanel({
           <button
             type="button"
             className="button button-ghost small"
+            disabled={busy || active !== null}
+            aria-pressed={cryoFreeze}
+            title={
+              active !== null
+                ? 'Restore the active session before changing Cryo-Freeze.'
+                : 'Pause non-essential cloud sync, updater and telemetry processes while a game session runs.'
+            }
+            onClick={() => onToggleCryoFreeze(!cryoFreeze)}
+          >
+            {cryoFreeze ? 'Cryo-Freeze off' : 'Cryo-Freeze on'}
+          </button>
+          <button
+            type="button"
+            className="button button-ghost small"
+            disabled={busy || active !== null}
+            aria-pressed={interruptAffinity}
+            title={
+              active !== null
+                ? 'Restore the active session before changing IRQ pinning.'
+                : 'Stage GPU, NVMe and NIC interrupt affinity on physical performance cores. Requires administrator rights. Windows applies the policy when each device next starts; devices are never restarted mid-game.'
+            }
+            onClick={() => onToggleInterruptAffinity(!interruptAffinity)}
+          >
+            {interruptAffinity ? 'IRQ pin off' : 'IRQ pin on'}
+          </button>
+          <button
+            type="button"
+            className="button button-ghost small"
             disabled={busy || osd === null}
             onClick={() => onToggleOsd(!(osd?.enabled ?? false))}
           >
@@ -120,6 +141,18 @@ export function GameModePanel({
           <strong>{topology === null ? '—' : `${topology.physicalCores}C / ${topology.logicalProcessors}T`}</strong>
         </span>
         <span>
+          <small>Cryo-Freeze</small>
+          <strong className={cryoFreeze ? 'mode-value-ok' : undefined}>
+            {status === null ? '—' : cryoFreeze ? 'Enabled' : 'Off'}
+          </strong>
+        </span>
+        <span>
+          <small>IRQ pin</small>
+          <strong className={interruptAffinity ? 'mode-value-ok' : undefined}>
+            {status === null ? '—' : interruptAffinity ? 'Staged' : 'Off'}
+          </strong>
+        </span>
+        <span>
           <small>OSD</small>
           <strong className={osd?.visible === true ? 'mode-value-ok' : undefined}>
             {osd === null ? '—' : osd.visible ? 'Visible' : osd.enabled ? 'Armed' : 'Off'}
@@ -127,6 +160,20 @@ export function GameModePanel({
         </span>
       </div>
 
+      {cryoFreeze && (
+        <p className="mode-note">
+          Cryo-Freeze is enabled: a fixed allowlist of cloud-sync, updater and telemetry processes is
+          suspended when a game session starts, and resumed when it ends or is recovered after a crash.
+        </p>
+      )}
+      {interruptAffinity && (
+        <p className="mode-note">
+          IRQ pinning is armed for the next session. The GPU, NVMe and NIC affinity policies are
+          journaled and restored on exit; Windows applies a device's policy when that device next
+          starts, and the restored policy is read at that same next start. TuneSmith never restarts
+          those devices during play. Administrator rights are required for the stage/restore write.
+        </p>
+      )}
       {osdMessage !== null && <p className="mode-note">{osdMessage}</p>}
       {status?.lastError != null && <p className="mode-alert">{status.lastError}</p>}
       {pendingRestore !== null && (
@@ -163,63 +210,18 @@ export function GameModePanel({
             </ul>
             {active.suspended.length > 0 && (
               <p className="muted small">
-                Suspended: {active.suspended.map((process) => `${process.process} (${process.pid})`).join(', ')}
+                Suspended:{' '}
+                {active.suspended
+                  .map(
+                    (process) =>
+                      `${process.process} (${process.pid})${process.cryoFreeze === true ? ' · Cryo-Freeze' : ''}`,
+                  )
+                  .join(', ')}
               </p>
             )}
           </div>
         </details>
       )}
-
-      <details className="panel-details">
-        <summary>
-          Game library <span className="details-count">{libraries === null ? 'scanning' : `${libraries.games.length} title(s)`}</span>
-        </summary>
-        <div className="details-body">
-          <div className="details-actions">
-            <span className="muted small">
-              {libraries === null
-                ? 'Read-only scan in progress.'
-                : `${detectedProfiles} profile(s) matched · scanned ${new Date(libraries.scannedAt).toLocaleTimeString()}`}
-            </span>
-            <button type="button" className="button button-ghost small" disabled={busy || libraries === null} onClick={onRefreshLibraries}>
-              Rescan
-            </button>
-          </div>
-
-          {libraries !== null && libraries.errors.length > 0 && (
-            <ul className="mode-list muted small">
-              {libraries.errors.map((error) => (
-                <li key={`${error.source}-${error.message}`}>
-                  {LIBRARY_SOURCE_LABEL[error.source] ?? 'Library'} scan incomplete: {error.message}
-                </li>
-              ))}
-            </ul>
-          )}
-
-          <ul className="library-games">
-            {(libraries?.games ?? []).map((game) => (
-              <li key={game.id}>
-                <div className="row">
-                  <strong>{game.name}</strong>
-                  <span className="chip">{LIBRARY_SOURCE_LABEL[game.source] ?? game.source}</span>
-                  {game.profileIds.length > 0 ? (
-                    <span className="pill pill-ok">Profile detected</span>
-                  ) : (
-                    <span className="chip">No installed profile</span>
-                  )}
-                </div>
-                <p className="muted small library-path">
-                  <code className="signature">{game.executablePath ?? game.installDir}</code>
-                </p>
-                {game.profileIds.length > 0 && (
-                  <p className="muted small">Suggested: {game.profileIds.map((id) => profileNames.get(id) ?? id).join(', ')}</p>
-                )}
-              </li>
-            ))}
-            {libraries !== null && libraries.games.length === 0 && <li className="muted">No installed titles were detected.</li>}
-          </ul>
-        </div>
-      </details>
 
       <details className="panel-details">
         <summary>

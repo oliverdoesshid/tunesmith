@@ -1,11 +1,12 @@
 /**
  * Artwork DTOs shared by the main process and the renderer.
  *
- * Remote SteamGridDB URLs never cross the bridge. The main process downloads and
- * validates every image, keeps it in its own cache, and returns a `ts-art://` URL that
- * the registered protocol handler serves from disk. That keeps the renderer's
- * `img-src` closed (no remote origins, no renderer-side fetches) and means a dropped
- * connection can only affect a cache miss, never the UI thread.
+ * Two pipelines live here:
+ *   - the legacy SteamGridDB batch, where remote URLs never cross the bridge and the
+ *     main process returns only `ts-art://` URLs from its own cache;
+ *   - the zero-key Steam resolver, which returns either a `file://` URL from Steam's
+ *     local library cache or an official Valve CDN URL, with a placeholder signal when
+ *     neither exists.
  */
 
 export type ArtworkStatus = 'ok' | 'not-found' | 'not-configured' | 'error';
@@ -43,4 +44,37 @@ export interface GameArtworkBatch {
 export interface ArtworkRequestItem {
   key: string;
   title: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * Zero-key Steam artwork resolver
+ * ------------------------------------------------------------------ */
+
+/** Where one resolved image came from. */
+export type ArtworkOrigin = 'local-cache' | 'steam-cdn' | 'placeholder';
+
+export interface ResolvedArtworkAsset {
+  /** `file://` for a local Steam cache hit, otherwise an official Valve CDN URL. */
+  url: string;
+  origin: Exclude<ArtworkOrigin, 'placeholder'>;
+}
+
+/**
+ * Artwork resolved without an API key: local Steam cache, then Valve's public CDN.
+ *
+ * When no image is available every asset is null, `placeholder` is true and the
+ * launcher renders its built-in clean plate. The main process never throws for a
+ * missing title, so an offline machine still renders the whole library.
+ */
+export interface ResolvedGameArtwork {
+  appId: number | null;
+  cover: ResolvedArtworkAsset | null;
+  hero: ResolvedArtworkAsset | null;
+  header: ResolvedArtworkAsset | null;
+  logo: ResolvedArtworkAsset | null;
+  /** Highest-fidelity origin used for this title. */
+  source: ArtworkOrigin;
+  placeholder: boolean;
+  /** Short, user-safe explanation when only a placeholder is available. */
+  message: string | null;
 }

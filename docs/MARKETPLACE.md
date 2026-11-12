@@ -1,9 +1,10 @@
 # Community marketplace: signatures, ratings and telemetry
 
-The marketplace defaults to the project's GitHub Pages catalog; `TUNESMITH_MARKET_URL`
-or `market/config.json` can point it elsewhere. No curator key is bundled, so a stock
-build reports a configuration/verification error and cannot list or install anything —
-an empty trust store never means "trust everything".
+The in-app marketplace consumes a signed catalog envelope; `TUNESMITH_MARKET_URL` or
+`market/config.json` can point it at one. No curator key is bundled, so a stock build reports
+a configuration/verification error and cannot list or install anything — an empty trust store
+never means "trust everything". The repository also publishes a separate static discovery
+catalog in `market/index.json`; see §6.
 
 ## 1. Trust model
 
@@ -96,7 +97,7 @@ the number is never a black box.
 Recorded locally whether or not consent is enabled (it powers the local crash numbers):
 
 ```json
-{ "at": "2026-11-10T12:00:00.000Z", "presetId": "example", "presetVersion": "1.2.0", "appVersion": "0.1.0", "kind": "apply-ok" }
+{ "at": "2026-11-10T12:00:00.000Z", "presetId": "example", "presetVersion": "1.2.0", "appVersion": "0.2.0", "kind": "apply-ok" }
 ```
 
 Kinds: `apply-ok`, `apply-failed`, `session-interrupted`, `session-recovered`. There is no
@@ -122,10 +123,44 @@ userData/
 Bundled presets always win when ids collide, so a catalog cannot shadow a preset that
 shipped with the app.
 
-## 6. Limitations
+## 6. Static GitHub Pages catalog
 
-- There is no hosted public catalog in this repository; the operator supplies the endpoint
-  and key. Tests generate an ephemeral Ed25519 key pair.
+`market/` is a standalone storefront deployed at
+`https://oliverdoesshid.github.io/tunesmith/market/`. It is deliberately independent of the
+signed `catalog.json` envelope above.
+
+- `market/index.json` is generated from `presets/community/` by `npm run market:index`
+  (`scripts/generateMarketIndex.ts`).
+- Each entry contains `id`, `name`, `version`, `author`, `description`, `hardwareSignature`,
+  `sha256`, `signature` and a `downloadUrl` pointing at the raw GitHub preset file. The digest
+  is over the exact file bytes; `signature` is the detached Ed25519 `.sig` over those same
+  bytes.
+- The generator validates each preset with the authoritative zod schema, requires a `.sig`,
+  verifies it against the pinned preset key, rejects duplicate ids/files and CR bytes, and
+  writes a deterministic (timestamp-free, id-sorted) catalog. `.gitattributes` checks signed
+  presets out with LF so the raw GitHub bytes match the published digest and signature.
+- `.github/workflows/publish-market.yml` runs the typecheck, regenerates the index, fails when
+  the committed `market/index.json` differs, stages `market/` under `/market/`, and deploys it
+  to GitHub Pages.
+- The page is dependency-free HTML/CSS/JS. Install buttons use
+  `tunesmith://install?preset=<id>&url=<raw>&sha256=<digest>&signature=<sig>`; each card also
+  offers the raw `.json` and `.sig` downloads for manual installation in
+  `<userData>/presets/community`. Manual copies load as `unverified`: that folder has no
+  signed catalog entry, so the app preserves the signature but does not grant marketplace
+  trust. The Electron app does not yet register the `tunesmith://` scheme; the links are a
+  forward-compatible contract and the page exposes the manual fallback.
+- This static catalog is not consumed by the in-app signed-catalog browser. It is the public
+  discovery/install surface and a stable contract for deep-link handling.
+
+Publishing changes: edit a preset, re-sign it with `scripts/sign-presets.mjs`, run
+`npm run market:index`, and commit both the preset and the regenerated catalog.
+
+## 7. Limitations
+
+- The in-app browser still has no hosted signed catalog in this repository; the operator
+  supplies that endpoint and curator key. The GitHub Pages deployment in §6 is a static
+  discovery/install surface, not a signed `catalog.json`. Tests generate an ephemeral Ed25519
+  key pair.
 - Community vote counts and `ratings.crashes` are publisher-supplied metadata. They are
   signature-covered (not tamperable in transit) but not proof of anything; the local crash
   rate is the signal the app measures itself.

@@ -15,13 +15,15 @@
  */
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
-import { describeError } from '../../../shared/errors';
+import { describeError, TuneSmithError } from '../../../shared/errors';
 import type {
   DiscoveredExecutable,
   DiscoveredGame,
   GameLibraryScanResult,
   GameLibrarySource,
+  ManualGameInput,
 } from '../../../shared/game/types';
+import type { ManualGameStore } from './manual-games';
 import { asArray, runPowerShellJson } from '../powershell';
 import { readValue } from '../registry';
 
@@ -46,6 +48,8 @@ export interface GameLibraryOptions {
   epicManifestDirs?: readonly string[];
   includeXbox?: boolean;
   includeGog?: boolean;
+  /** Persistent user-added entries merged into every scan. */
+  manualGames?: ManualGameStore;
   /** Injectable clock for deterministic tests. */
   now?: () => string;
 }
@@ -687,8 +691,42 @@ export class GameLibraryService {
     }
   }
 
+  /** Persist a local title that no launcher manifest exposed. */
+  async addManualGame(input: ManualGameInput): Promise<DiscoveredGame> {
+    if (this.options.manualGames === undefined) {
+      throw new TuneSmithError('unavailable', 'Manual game entries are unavailable in this build.');
+    }
+    const game = await this.options.manualGames.add(input);
+    await this.invalidate();
+    return game;
+  }
+
+  async removeManualGame(gameId: string): Promise<boolean> {
+    if (this.options.manualGames === undefined) return false;
+    const removed = await this.options.manualGames.remove(gameId);
+    if (removed) await this.invalidate();
+    return removed;
+  }
+
+  private async invalidate(): Promise<void> {
+    this.cache = null;
+    const pending = this.inFlight;
+    if (pending === null) return;
+    try {
+      await pending;
+    } catch {
+      // The next scan will report the source failure; invalidation only clears the cache.
+    }
+    this.cache = null;
+  }
+
   private async runScan(): Promise<GameLibraryScanResult> {
     const errors: GameLibraryScanResult['errors'] = [];
+    const manual =
+      this.options.manualGames === undefined
+        ? { games: [], errors: [] }
+        : await this.options.manualGames.load();
+    errors.push(...manual.errors);
     const sources: Promise<DiscoveredGame[]>[] = [];
     const labels: GameLibrarySource[] = [];
 
@@ -714,7 +752,7 @@ export class GameLibraryService {
     }
 
     const settled = await Promise.allSettled(sources);
-    const games: DiscoveredGame[] = [];
+    const games: DiscoveredGame[] = [...manual.games];
     for (const [index, outcome] of settled.entries()) {
       if (outcome.status === 'fulfilled') games.push(...outcome.value);
       else errors.push({ source: labels[index] ?? 'library', message: errorMessage(outcome.reason) });

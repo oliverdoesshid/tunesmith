@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "tiktok-live-studio-streaming",
+  "name": "TikTok LIVE Studio — Streaming",
+  "version": "1.0.0",
+  "description": "Keeps a live broadcast's capture and encode pipeline ahead of background work: the studio itself gets AboveNormal priority and the high-performance GPU, while browsers, sync clients and music players are pushed below it. Nothing is suspended, so no browser source, upload or chat client stops mid-stream.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "moderate",
+  "trigger": { "exe": "TikTok LIVE Studio.exe" },
+  "actions": {
+    "priority": "AboveNormal",
+    "gpuPreference": "high-performance",
+    "backgroundRules": [
+      { "process": "chrome.exe", "action": "lower-priority", "priority": "BelowNormal" },
+      { "process": "msedge.exe", "action": "lower-priority", "priority": "BelowNormal" },
+      { "process": "firefox.exe", "action": "lower-priority", "priority": "BelowNormal" },
+      { "process": "Spotify.exe", "action": "lower-priority", "priority": "BelowNormal" },
+      { "process": "OneDrive.exe", "action": "lower-priority", "priority": "BelowNormal" },
+      { "process": "Dropbox.exe", "action": "lower-priority", "priority": "BelowNormal" }
+    ]
+  },
+  "notes": [
+    "Nothing is suspended: a broadcast must not lose a browser source, an upload or a voice call mid-stream, so competing apps are only pushed to BelowNormal.",
+    "Hardware encoding (NVENC on NVIDIA, AMF on AMD, Quick Sync on Intel) is the single biggest CPU saving while streaming, but it is chosen in the studio's own output settings — no profile can change another app's encoder.",
+    "Discord is deliberately not listed. Lowering a voice client's priority trades audio latency for a little CPU, which is the wrong trade while you are live.",
+    "The session stays applied while the studio is running, so alt-tabbing to chat does not end it; every priority and the GPU preference are restored when it exits or the session is stopped."
+  ]
+}

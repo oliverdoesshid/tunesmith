@@ -20,7 +20,7 @@ import type { GameStatus, TelemetrySample } from '../../shared/game/types';
 import type { GameSnapshot } from '../platform/game/watcher';
 import { startFrameMonitor, type FrameMonitorHandle, type FrameMonitorStatus } from '../platform/game/frame-monitor';
 import { OSD_HEIGHT, OSD_WIDTH, placeOverlay } from './geometry';
-import { buildOsdState } from './state';
+import { buildOsdState, osdStateKey } from './state';
 
 export interface OverlayController {
   status(): OsdStatus;
@@ -41,6 +41,24 @@ export interface GameOverlayControllerDeps {
 }
 
 const TELEMETRY_TTL_MS = 5_000;
+
+interface OverlayBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Geometry is stable for most of a session; only a real change is worth a window move. */
+function sameBounds(previous: OverlayBounds | null, next: OverlayBounds): boolean {
+  return (
+    previous !== null &&
+    previous.x === next.x &&
+    previous.y === next.y &&
+    previous.width === next.width &&
+    previous.height === next.height
+  );
+}
 
 export class GameOverlayController implements OverlayController {
   private readonly deps: GameOverlayControllerDeps;
@@ -63,6 +81,10 @@ export class GameOverlayController implements OverlayController {
   private telemetry: TelemetrySample | null = null;
   private telemetryAt = 0;
   private telemetryInFlight = false;
+  /** Last geometry actually handed to the window, so an idle tick moves nothing. */
+  private lastBounds: OverlayBounds | null = null;
+  /** Key of the last payload sent; identical frames are not sent again. */
+  private lastPushedKey: string | null = null;
 
   constructor(deps: GameOverlayControllerDeps) {
     this.deps = deps;
@@ -198,9 +220,20 @@ export class GameOverlayController implements OverlayController {
         OSD_HEIGHT,
       );
 
-      win.setBounds(target, false);
-      if (!win.isVisible()) win.showInactive();
-      win.moveTop();
+      const wasVisible = win.isVisible();
+      const moved = !sameBounds(this.lastBounds, target);
+      if (moved) {
+        win.setBounds(target, false);
+        this.lastBounds = target;
+      }
+      if (!wasVisible) {
+        win.showInactive();
+        win.moveTop();
+      } else if (moved) {
+        // Re-raising an already top-most window buys nothing, and it makes the desktop
+        // compositor restack the overlay over the game on every watcher tick.
+        win.moveTop();
+      }
       this.pushState();
       void this.refreshTelemetry();
     } catch (error) {
@@ -258,6 +291,9 @@ export class GameOverlayController implements OverlayController {
     });
 
     this.win = win;
+    // A fresh renderer has received nothing yet, so its first push must be unconditional.
+    this.lastPushedKey = null;
+    this.lastBounds = null;
     win.setMenuBarVisibility(false);
     win.setAlwaysOnTop(true, 'screen-saver');
     win.setFocusable(false);
@@ -270,7 +306,10 @@ export class GameOverlayController implements OverlayController {
     win.webContents.on('will-navigate', (event) => event.preventDefault());
     win.webContents.on('will-redirect', (event) => event.preventDefault());
     win.webContents.on('will-attach-webview', (event) => event.preventDefault());
-    win.webContents.on('did-finish-load', () => this.pushState());
+    win.webContents.on('did-finish-load', () => {
+      this.lastPushedKey = null;
+      this.pushState();
+    });
 
     win.on('closed', () => {
       if (this.win === win) this.win = null;
@@ -296,6 +335,11 @@ export class GameOverlayController implements OverlayController {
     if (win === null || win.isDestroyed()) return;
     const state = this.state();
     if (state === null) return;
+    // The watcher ticks every two seconds and geometry changes arrive while a window is
+    // dragged. Re-sending an identical payload re-renders the overlay for nothing.
+    const key = osdStateKey(state);
+    if (key === this.lastPushedKey) return;
+    this.lastPushedKey = key;
     win.webContents.send(EVENT_CHANNELS.osdState, state);
   }
 

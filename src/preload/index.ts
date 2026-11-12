@@ -21,17 +21,27 @@ import type {
   SessionSummary,
 } from '../shared/session';
 import type { HardwareSpec } from '../shared/types';
-import type { ArtworkRequestItem, GameArtworkBatch } from '../shared/game/artwork';
+import type {
+  ArtworkRequestItem,
+  GameArtworkBatch,
+  ResolvedGameArtwork,
+} from '../shared/game/artwork';
 import type { OsdStatus } from '../shared/game/osd';
 import type {
+  DiscoveredGame,
   GameLaunchResult,
   GameLibraryScanResult,
+  GamePathPickKind,
   GameProfileSummary,
   GameStatus,
+  ManualGameAddRequest,
+  PickedGamePath,
 } from '../shared/game/types';
 import type { InstallResult, MarketStatus } from '../shared/market/types';
 import type { HealthFlushResult, HealthStatus } from '../shared/health/types';
+import type { ShaderCachePruneResult, ShaderCacheStatus } from '../shared/shader-cache';
 import type { PostApplyStatus } from '../shared/post-apply';
+import type { UpdaterStatus } from '../shared/updater';
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   const response = (await ipcRenderer.invoke(channel, ...args)) as IpcEnvelope<T> | undefined;
@@ -51,6 +61,9 @@ const api: TuneSmithApi = {
   bridgeVersion: 1,
   mock: false,
 
+  getArtwork: (appId: string | number) =>
+    invoke<ResolvedGameArtwork>(IPC_CHANNELS.gameResolveArtwork, { appId }),
+
   app: {
     info: () => invoke<AppInfo>(IPC_CHANNELS.appInfo),
     memory: () => invoke<MemorySnapshot>(IPC_CHANNELS.appMemory),
@@ -59,6 +72,19 @@ const api: TuneSmithApi = {
 
   hardware: {
     get: (forceRefresh = false) => invoke<HardwareSpec>(IPC_CHANNELS.hardwareGet, forceRefresh),
+  },
+
+  updater: {
+    status: () => invoke<UpdaterStatus>(IPC_CHANNELS.updateStatus),
+    check: () => invoke<UpdaterStatus>(IPC_CHANNELS.updateCheck),
+    install: () => invoke<void>(IPC_CHANNELS.installUpdate),
+    onStatus: (listener: (status: UpdaterStatus) => void) => {
+      const handler = (_event: unknown, payload: UpdaterStatus): void => listener(payload);
+      ipcRenderer.on(EVENT_CHANNELS.updateStatus, handler);
+      return () => {
+        ipcRenderer.removeListener(EVENT_CHANNELS.updateStatus, handler);
+      };
+    },
   },
 
   presets: {
@@ -91,8 +117,15 @@ const api: TuneSmithApi = {
   game: {
     status: () => invoke<GameStatus>(IPC_CHANNELS.gameStatus),
     setWatching: (enabled: boolean) => invoke<GameStatus>(IPC_CHANNELS.gameSetWatching, { enabled }),
+    setCryoFreeze: (enabled: boolean) =>
+      invoke<GameStatus>(IPC_CHANNELS.gameSetCryoFreeze, { enabled }),
+    setInterruptAffinity: (enabled: boolean) =>
+      invoke<GameStatus>(IPC_CHANNELS.gameSetInterruptAffinity, { enabled }),
     profiles: () => invoke<GameProfileSummary[]>(IPC_CHANNELS.gameProfiles),
     libraries: (refresh = false) => invoke<GameLibraryScanResult>(IPC_CHANNELS.gameLibraries, { refresh }),
+    addManual: (input: ManualGameAddRequest) => invoke<DiscoveredGame>(IPC_CHANNELS.gameAddManual, input),
+    removeManual: (gameId: string) => invoke<boolean>(IPC_CHANNELS.gameRemoveManual, { gameId }),
+    pickPath: (kind: GamePathPickKind) => invoke<PickedGamePath | null>(IPC_CHANNELS.gamePickPath, { kind }),
     artwork: (games: ArtworkRequestItem[]) =>
       invoke<GameArtworkBatch>(IPC_CHANNELS.gameArtwork, { games }),
     openFolder: (folderPath: string) => invoke<void>(IPC_CHANNELS.gameOpenFolder, { path: folderPath }),
@@ -122,6 +155,12 @@ const api: TuneSmithApi = {
         ipcRenderer.removeListener(EVENT_CHANNELS.healthStatus, handler);
       };
     },
+  },
+
+  shaderCache: {
+    status: () => invoke<ShaderCacheStatus>(IPC_CHANNELS.shaderCacheStatus),
+    scan: (refresh = false) => invoke<ShaderCacheStatus>(IPC_CHANNELS.shaderCacheScan, { refresh }),
+    prune: (request) => invoke<ShaderCachePruneResult>(IPC_CHANNELS.shaderCachePrune, request),
   },
 
   market: {

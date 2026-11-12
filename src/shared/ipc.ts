@@ -22,12 +22,31 @@ import type {
   RollbackReport,
   SessionSummary,
 } from './session';
-import type { ArtworkRequestItem, GameArtworkBatch } from './game/artwork';
+import type {
+  ArtworkRequestItem,
+  GameArtworkBatch,
+  ResolvedGameArtwork,
+} from './game/artwork';
 import type { OsdStatus } from './game/osd';
-import type { GameLaunchResult, GameLibraryScanResult, GameProfileSummary, GameStatus } from './game/types';
+import type {
+  DiscoveredGame,
+  GameLaunchResult,
+  GameLibraryScanResult,
+  GamePathPickKind,
+  GameProfileSummary,
+  GameStatus,
+  ManualGameAddRequest,
+  PickedGamePath,
+} from './game/types';
 import type { InstallResult, MarketStatus } from './market/types';
 import type { HealthFlushResult, HealthStatus } from './health/types';
+import type {
+  ShaderCachePruneRequest,
+  ShaderCachePruneResult,
+  ShaderCacheStatus,
+} from './shader-cache';
 import type { PostApplyStatus } from './post-apply';
+import type { UpdaterStatus } from './updater';
 
 // Re-exported so main-process code can import the contract from one place.
 export { EVENT_CHANNELS, IPC_CHANNELS };
@@ -58,8 +77,30 @@ export const gameWatchingRequest = z.strictObject({
   enabled: z.boolean(),
 });
 
+export const gameCryoFreezeRequest = z.strictObject({
+  enabled: z.boolean(),
+});
+
+export const gameInterruptAffinityRequest = z.strictObject({
+  enabled: z.boolean(),
+});
+
 export const gameLibraryScanRequest = z.strictObject({
   refresh: z.boolean().optional(),
+});
+
+export const manualGameAddRequest = z.strictObject({
+  name: z.string().trim().min(1).max(160),
+  installDirToken: z.string().regex(/^[a-f0-9-]{36}$/),
+  executableToken: z.string().regex(/^[a-f0-9-]{36}$/),
+});
+
+export const gameIdRequest = z.strictObject({
+  gameId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9:._-]{0,159}$/),
+});
+
+export const gamePathPickRequest = z.strictObject({
+  kind: z.enum(['folder', 'executable']),
 });
 
 export const osdToggleRequest = z.strictObject({
@@ -76,6 +117,14 @@ export const artworkRequestSchema = z.strictObject({
     )
     .min(1)
     .max(24),
+});
+
+/** A single Steam App ID for the zero-key artwork resolver. */
+export const artworkResolveRequest = z.strictObject({
+  appId: z.union([
+    z.number().int().positive().max(4_294_967_295),
+    z.string().trim().regex(/^[1-9][0-9]{0,9}$/),
+  ]),
 });
 
 export const gameFolderRequest = z.strictObject({
@@ -101,6 +150,16 @@ export const telemetryConsentRequest = z.strictObject({
 
 export const healthPinRequest = z.strictObject({
   presetId: z.string().regex(/^[a-z0-9][a-z0-9-]{2,63}$/).nullable(),
+});
+
+export const shaderCacheScanRequest = z.strictObject({
+  refresh: z.boolean().optional(),
+});
+
+/** Only DirectX has metadata that can prove a cache file is orphaned. */
+export const shaderCachePruneRequest = z.strictObject({
+  cacheIds: z.array(z.literal('directx')).min(1).max(1),
+  confirm: z.literal(true),
 });
 
 export type ApplyRequest = z.infer<typeof applyRequestSchema>;
@@ -148,6 +207,11 @@ export type IpcEnvelope<T> = { ok: true; value: T } | { ok: false; error: { code
 export interface TuneSmithApi {
   /** Bumped on breaking bridge changes so the renderer can refuse a stale preload. */
   readonly bridgeVersion: 1;
+  /**
+   * Zero-key Steam artwork: local Steam cache first, then Valve's public CDN, then a
+   * placeholder. Safe to call for any library title; never throws for a missing title.
+   */
+  getArtwork(appId: string | number): Promise<ResolvedGameArtwork>;
   app: {
     info(): Promise<AppInfo>;
     /** Read-only physical-memory pressure sample for the live dashboard. */
@@ -156,6 +220,14 @@ export interface TuneSmithApi {
   };
   hardware: {
     get(forceRefresh?: boolean): Promise<HardwareSpec>;
+  };
+  updater: {
+    status(): Promise<UpdaterStatus>;
+    /** Request a feed check. Returns disabled status in development builds. */
+    check(): Promise<UpdaterStatus>;
+    /** Install a downloaded update; rejected before the download completes. */
+    install(): Promise<void>;
+    onStatus(listener: (status: UpdaterStatus) => void): () => void;
   };
   presets: {
     list(): Promise<PresetSummary[]>;
@@ -179,9 +251,18 @@ export interface TuneSmithApi {
   game: {
     status(): Promise<GameStatus>;
     setWatching(enabled: boolean): Promise<GameStatus>;
+    /** Arm automatic suspension of a fixed allowlist of non-essential background processes. */
+    setCryoFreeze(enabled: boolean): Promise<GameStatus>;
+    /** Stage per-device GPU/NVMe/NIC interrupt affinity for the next game session. */
+    setInterruptAffinity(enabled: boolean): Promise<GameStatus>;
     profiles(): Promise<GameProfileSummary[]>;
-    /** Read-only scan of installed Steam, Epic, Xbox and GOG titles. */
+    /** Read-only scan of installed Steam, Epic, Xbox and GOG titles plus manual entries. */
     libraries(refresh?: boolean): Promise<GameLibraryScanResult>;
+    /** Add a local title using paths the user selected in the native picker. */
+    addManual(input: ManualGameAddRequest): Promise<DiscoveredGame>;
+    removeManual(gameId: string): Promise<boolean>;
+    /** Native folder/executable picker; returns null when the dialog is cancelled. */
+    pickPath(kind: GamePathPickKind): Promise<PickedGamePath | null>;
     /**
      * SteamGridDB artwork for discovered titles. The renderer never sees a remote URL:
      * images are cached by the main process and served through `ts-art://`.
@@ -205,6 +286,13 @@ export interface TuneSmithApi {
     pin(presetId: string | null): Promise<HealthStatus>;
     flushJournals(): Promise<HealthFlushResult>;
     onStatus(listener: (status: HealthStatus) => void): () => void;
+  };
+  shaderCache: {
+    status(): Promise<ShaderCacheStatus>;
+    /** Read-only inventory; only fixed LocalAppData cache roots are inspected. */
+    scan(refresh?: boolean): Promise<ShaderCacheStatus>;
+    /** Explicitly confirmed deletion of whole, metadata-proven orphaned DirectX files. */
+    prune(request: ShaderCachePruneRequest): Promise<ShaderCachePruneResult>;
   };
   market: {
     status(refresh?: boolean): Promise<MarketStatus>;

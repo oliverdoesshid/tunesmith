@@ -13,6 +13,7 @@ import { GameController } from './engine/game/controller';
 import { GameProfileRepository, GameSessionStore } from './engine/game/store';
 import { createSystemGameAdapter } from './platform/game/adapter';
 import { GameLibraryService } from './platform/game/libraries';
+import { ManualGameStore } from './platform/game/manual-games';
 import { Executor } from './engine/executor';
 import { PostApplyWatchdog } from './engine/post-apply';
 import { probePostApplyStability } from './platform/stability';
@@ -26,6 +27,8 @@ import { createRestorePoint } from './platform/restore-point';
 import { HealthStore } from './health/store';
 import { HealthWatchdog } from './health/watchdog';
 import { loadSteamGridDbApiKey, SteamGridDbService } from './services/steamgriddb';
+import { ArtworkResolver, steamCacheDirFromEnv } from './services/artworkResolver';
+import { ShaderCacheService } from './services/shader-cache';
 import { probeHealthSnapshot } from './health/probes';
 import type { HardwareSpec } from '../shared/types';
 
@@ -83,6 +86,10 @@ export function createAppState(): AppStateShape {
     getSpec,
   });
 
+  const shaderCache = new ShaderCacheService({
+    log: (line) => console.log(`[shader-cache] ${line}`),
+  });
+
   const health = new HealthWatchdog({
     store: new HealthStore(userData),
     probe: () => probeHealthSnapshot(),
@@ -111,7 +118,9 @@ export function createAppState(): AppStateShape {
     log: (line) => console.log(`[stability] ${line}`),
   });
 
-  const libraries = new GameLibraryService();
+  const libraries = new GameLibraryService({
+    manualGames: new ManualGameStore(path.join(userData, 'games', 'manual-games.json')),
+  });
 
   const artwork = new SteamGridDbService({
     cacheDir: artworkCacheDir,
@@ -119,10 +128,21 @@ export function createAppState(): AppStateShape {
     log: (line) => console.log(`[artwork] ${line}`),
   });
 
+  // Zero-key artwork never needs configuration; a custom Steam library cache can be
+  // pointed at with TUNESMITH_STEAM_CACHE_DIR.
+  const artworkResolver = new ArtworkResolver({
+    cacheDir: steamCacheDirFromEnv(),
+    log: (line) => console.log(`[artwork] ${line}`),
+  });
+
   const game = new GameController({
     adapter: createSystemGameAdapter(),
     profiles: new GameProfileRepository(gameProfilesDir),
     sessions: new GameSessionStore(gameSessionsDir),
+    knownGames: async () => {
+      const scan = await libraries.scan();
+      return scan.games.flatMap((entry) => entry.executables.map((executable) => executable.name));
+    },
     pollMs: 2_000,
     log: (line) => console.log(`[game] ${line}`),
   });
@@ -170,8 +190,10 @@ export function createAppState(): AppStateShape {
     game,
     libraries,
     artwork,
+    artworkResolver,
     artworkCacheDir,
     health,
+    shaderCache,
     market,
     presetsDir,
     gameProfilesDir,

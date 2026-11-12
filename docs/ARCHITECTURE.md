@@ -1,7 +1,7 @@
 # Architecture
 
 > Status: foundational skeleton. It builds, typechecks, and its core logic is covered by
-> 334 unit tests across 28 files. It has not been run against a live Windows host for the *mutation* paths
+> 427 unit tests across 44 files. It has not been run against a live Windows host for the *mutation* paths
 > (see [Verification](../README.md#verification)), by design: no test suite in this repo is
 > allowed to change the machine it runs on.
 
@@ -23,10 +23,12 @@ Three properties drive every design decision:
 
 Explicitly out of scope for this layer: driver installation, overclocking/undervolting,
 boot configuration (BCD/HPET) changes, service *creation*, scheduled tasks, network *stack*
-(driver bindings, provider order), kernel parameters, persistent background agents, auto-update,
-and telemetry. Per-interface TCP acknowledgement values and MSI-X enablement are in scope
-(requirement 8) because they are pure registry state with exact capture and restore; BCD edits
-are not, because a wrong value bricks the boot and no journal can undo it.
+(driver bindings, provider order), kernel parameters, persistent background agents, and
+telemetry. Per-interface TCP acknowledgement values, MSI-X enablement and per-device
+interrupt-affinity policy are in scope (requirement 8) because they are pure registry state
+with exact capture and restore; the affinity engine stages policy for the device's next start
+rather than restarting live hardware. BCD edits are not in scope, because a wrong value bricks
+the boot and no journal can undo it.
 
 ## 2. Layers
 
@@ -34,6 +36,7 @@ are not, because a wrong value bricks the boot and no journal can undo it.
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │ Renderer (React, sandboxed, no Node)                                         │
 │   App.tsx → HardwarePanel · PresetBrowser · InstalledPresets · PlanDialog    │
+│             GameLauncherGrid · ShaderCachePanel · SystemHealthPanel          │
 └───────────────────────────────┬──────────────────────────────────────────────┘
                                 │  window.tunesmith (contextBridge, narrow API)
 ┌───────────────────────────────┴──────────────────────────────────────────────┐
@@ -48,6 +51,8 @@ are not, because a wrong value bricks the boot and no journal can undo it.
 │  platform/   registry (reg.exe) · services (sc.exe) · power (powercfg.exe)   │
 │              processes (PowerShell) · restore-point (PowerShell) · hardware  │
 │  security/   CSP, navigation guards, permission denial                       │
+│  services/   artwork resolver · shader-cache fixed-root health/prune         │
+│  updater.ts  packaged GitHub Releases check · download status · install      │
 │  overlay/    transparent, click-through OSD window (separate renderer)        │
 └───────────────────────────────┬──────────────────────────────────────────────┘
                                 │  Windows APIs via fixed, parameterised calls
@@ -70,6 +75,9 @@ compiler · loader · session types. Used by main, renderer, CLI and tests alike
 | `shared/preset/compiler.ts` | Preset + machine → ordered, deduplicated, typed plan | schema, policy, matcher |
 | `shared/preset/loader.ts` | Read, digest-verify, parse, policy-evaluate a preset library | schema, policy |
 | `shared/service-graph.ts` | Bounded, read-only SCM dependency tree for service actions | policy, session types |
+| `shared/market/*` | Signed in-app catalog types plus the static Pages index schema and URL rules | zod |
+| `scripts/generateMarketIndex.ts` | Verifies community preset digests/signatures and emits `market/index.json` | shared/market, security/keys |
+| `market/` | Dependency-free GitHub Pages storefront and generated public catalog | — |
 | `main/platform/*` | Thin adapters over one system tool each | — |
 | `main/platform/interrupts.ts` | MSI-X / IRQ-priority / per-interface TCP capture-apply-restore | registry, powershell |
 | `main/platform/service-registry.ts` | Fixed read-only SCM inventory + zod-normalised rows | powershell, zod |
@@ -79,15 +87,22 @@ compiler · loader · session types. Used by main, renderer, CLI and tests alike
 | `main/platform/game/*` | Watcher (`tasklist` + event-driven foreground), affinity/priority/suspend, CPU topology, GPU preference, read-only library discovery | platform |
 | `main/engine/game/*` | Profile loading, session persistence, activate/restore state machine | platform/game |
 | `main/platform/game/network.ts` | Game-route discovery; per-interface TCP and NIC capture/apply/restore | interrupts, powershell |
+| `main/platform/interrupt-affinity.ts` | GPU/NVMe/NIC PnP enumeration; per-device affinity-policy capture/apply/restore | registry, powershell |
+| `shared/game/interrupt-affinity.ts` | One-processor-group physical P-core mask planning | shared/game/affinity |
 | `main/platform/stability.ts` | Read-only temperature and Windows `% DPC Time` probe | platform/game |
 | `main/engine/post-apply.ts` | Five-minute aggressive-apply watchdog; calls the journal rollback path | engine/executor |
 | `shared/post-apply.ts` | Post-apply watchdog DTOs shared by main and renderer | shared |
 | `main/health/*` | Health baseline, read-only OS/file probes, drift comparison, stale-journal cleanup | platform, engine/journal |
-| `shared/game/artwork.ts` | Artwork DTOs; only local `ts-art://` URLs cross the bridge | — |
+| `shared/game/artwork.ts` | SteamGridDB and zero-key Steam artwork DTOs | — |
 | `main/services/steamgriddb.ts` | SteamGridDB search/artwork fetch, strict parsing, disk cache | zod, artwork-files |
+| `main/services/artworkResolver.ts` | Local Steam cache scan, Valve CDN URLs/probes, placeholder chain, memory cache | shared/game/artwork |
 | `main/services/artwork-files.ts` | HTTPS host allowlist, cache path mapping, image magic-byte checks | — |
 | `main/services/artwork-protocol.ts` | Private `ts-art://` protocol serving cached images | electron |
 | `main/services/game-files.ts` | Open/launch validation against discovered install roots | shared/game |
+| `shared/shader-cache.ts` | Closed cache ids, health DTOs and the prune request/result contract | — |
+| `main/services/shader-cache.ts` | Fixed LocalAppData scan, DirectX `app_id` orphan analysis, whole-file prune | node:fs, node:sqlite |
+| `shared/updater.ts` | Display-only update phase/status DTO | — |
+| `main/updater.ts` | Packaged-only GitHub Releases check, download events and install handoff | electron-updater, electron-log |
 | `shared/game/osd.ts` | Display-only OSD DTOs and the `onState` bridge type | — |
 | `main/platform/game/frame-script.ts` | Static ETW present-sampler C# body, DXGI/D3D9 providers | — |
 | `main/platform/game/frame-monitor.ts` | Child lifecycle, line parsing, explicit unavailable state | frame-script |
@@ -96,7 +111,7 @@ compiler · loader · session types. Used by main, renderer, CLI and tests alike
 | `main/overlay/controller.ts` | Transparent BrowserWindow, anchoring, ETW lifecycle, toggle | electron, platform/game |
 | `preload/overlay.ts` | Display-only bridge; no invoke, no app API | shared/game/osd |
 | `renderer/overlay.tsx` | OSD layout and browser-preview fixture | shared/game/osd |
-| `renderer/components/GameLauncherGrid.tsx` | Artwork grid, lazy batches, hover actions, error boundary | shared/game, preload |
+| `renderer/components/GameLauncherGrid.tsx` | Steam cover ledger, per-app lazy resolution, loading plates, error boundary | shared/game, preload |
 | `main/ipc.ts` | Privileged surface: sender check, zod parse, error envelope | engine, platform |
 | `renderer/*` | Presentation only; no privileged capability | shared types |
 
@@ -300,7 +315,7 @@ App (owns the state machine)
 │   └── CatalogCard  verified SHA-256/Ed25519 chip, install, safety score
 ├── InstalledPresets  search + filters for the locally installed library
 │   └── PresetCard    risk badge, match score, step summary, blocked reasons
-├── GameLauncherGrid  installed-title grid · cached SteamGridDB art · Play · Browse local files
+├── GameLauncherGrid  installed-title grid · Steam cache/CDN covers · Play · Browse local files
 ├── GameModePanel     watcher status · OSD toggle · detected libraries · installed profiles
 ├── SessionPanel      session history + per-session Undo + "Restore to default"
 └── PlanDialog        active profiles, service dependency trees, grouped diff, notes, consent, progress
@@ -354,8 +369,10 @@ renderer        main                         engine                 OS
 | Restore point throttled | checkpoint result | `preferred`: continue + disclose; `required`: abort |
 | Two sessions | lock holder | second is rejected with the holder's pid |
 | Renderer compromised | sender check + zod | request rejected; no privileged capability exposed |
-| SteamGridDB key missing | batch `configured:false` | placeholders + one setup notice; no requests |
-| SteamGridDB unreachable | per-title status `error` | cached art/placeholders stay; retry action |
+| Steam cache and CDN empty | placeholder result | generated plate stays; no error toast |
+| Steam CDN unreachable | placeholder + short negative cache | plate stays; retry after 60 s |
+| Invalid Steam App ID | zod + resolver validation | placeholder; no filesystem or network access |
+| SteamGridDB key missing (legacy) | batch `configured:false` | placeholders + one setup notice; no requests |
 | Game folder vanished | `stat` before `openPath` | error response; nothing opened |
 | No detected executable | Play disabled; main refuses | watcher not armed |
 | No game TCP server route | interface discovery returns empty | network adjustment recorded as skipped; no idle interface is touched |
@@ -375,8 +392,16 @@ renderer        main                         engine                 OS
   mismatch, unlisted-file smuggling, and duplicate ids.
 - **Game launcher** is tested at three boundaries: path rules (traversal/UNC/device/stream
   rejection, case-insensitive discovered-root matching, executable containment), IPC routing
-  (sender check, strict payloads, open/launch dispatch), and SteamGridDB parsing/caching
-  (fixtures, magic bytes, host allowlist, cache restart, missing key, retry after an outage).
+  (sender check, strict payloads, native-picker token redemption, open/launch dispatch), and
+  SteamGridDB parsing/caching (fixtures, magic bytes, host allowlist, cache restart, missing key,
+  retry after an outage). The manual store is exercised against real temp files, including
+  duplicate/outside-root rejection and refusing to overwrite a malformed list. Cryo-Freeze is
+  covered at the controller boundary: candidate policy filtering, profile precedence, the
+  machine-sized budget, generic library-game activation, the active-session toggle guard, and
+  restore through the session file.
+- **Zero-key Steam artwork** is tested against a real temp cache and a fake CDN: App ID validation,
+  exact CDN URLs, local `file://` precedence, mixed local/CDN assets, HEAD 404 and outage
+  placeholders, negative-cache expiry, and concurrent-request deduplication.
 - **Shipped presets** are loaded and policy-checked in CI: the library cannot regress into a
   blocked state.
 - **Performance OSD** geometry, state mapping, ETW line parsing, malformed-value rejection and
@@ -385,6 +410,10 @@ renderer        main                         engine                 OS
 - **Game network and post-apply watchdog** are covered by schema/policy tests, a fake-adapter
   capture-before-apply/restore test, and deterministic watchdog tests for thermal, DPC,
   freeze, stable, cancel and missing-sensor paths.
+- **IRQ affinity** is covered at the pure planner, controller and IPC/UI boundaries:
+  SMT deduplication, hybrid P-core selection, multi-group refusal, capture-before-apply
+  ordering, session persistence, restore, active-session toggle guard and no-device skip.
+  The live PnP affinity write/restore was not run in the test suite.
 
 ## 11. Extension points
 
@@ -402,12 +431,14 @@ renderer        main                         engine                 OS
 ## 12. Per-game runtime engine
 
 A second, shorter-lived kind of session: while a specific game has focus, a profile applies
-affinity/priority, a per-app GPU preference, optional background silencing, and optional
-game-route TCP/NIC tuning, then restores everything when the process exits. Network values
-are captured per discovered interface into the game session before mutation; the profile
-never names an adapter or registry path. It shares the durable-before-mutate invariant but
-keeps its own session store, because its lifecycle is "until the game closes" rather than
-"until the user rolls back".
+affinity/priority, a per-app GPU preference, optional background silencing, optional
+game-route network TCP/NIC tuning, and optional per-device GPU/NVMe/NIC interrupt-affinity staging,
+then restores everything when the process exits. Network values are captured per discovered
+interface into the game session before mutation; the profile never names an adapter or
+registry path. Interrupt-affinity devices are likewise enumerated at runtime and every prior
+policy value is written to the session before mutation. It shares the durable-before-mutate
+invariant but keeps its own session store, because its lifecycle is "until the game closes"
+rather than "until the user rolls back".
 
 After a successful aggressive *preset* apply, a separate five-minute watchdog samples thermal
 and DPC data. A temperature above 90 °C, sustained DPC pressure, or a freeze-sized process
@@ -423,7 +454,7 @@ deny list and verification status: `docs/GAME-ENGINE.md`.
 
 | Excluded | Why |
 |---|---|
-| `REG_BINARY`, `REG_MULTI_SZ` | ambiguous `reg.exe` encodings; no mainstream tweak needs them |
+| `REG_BINARY`, `REG_MULTI_SZ` in the **preset action vocabulary** | ambiguous `reg.exe` encodings; no mainstream preset tweak needs them. The interrupt-affinity snapshot handles REG_BINARY internally through a narrowly scoped PowerShell value reader/writer. |
 | `RealTime` priority | starves input/audio threads; cannot be made safe |
 | Raw `powercfg` GUIDs from presets | vocabulary drift and auditability |
 | Direct writes under `HKLM\SYSTEM\CurrentControlSet\Services` | bypasses SCM dependency checks; use the service action |
@@ -441,37 +472,57 @@ notes: `docs/HEALTH-WATCHDOG.md`.
 
 ## 15. Game launcher and artwork
 
-The library grid is presentation over the read-only scanner, plus two privileged actions that
-never accept a path from the renderer:
+The library grid is presentation over the read-only scanner and the small persisted manual-entry
+store, plus privileged actions that resolve and validate their targets in main. Selecting a row
+opens that title's settings in place; the duplicate library list was removed from Game Mode.
 
 - **Browse local files.** `game:open-folder` takes an absolute path, but the handler resolves it
   against the cached library scan and opens only a discovered `installDir` with
   `shell.openPath`. UNC/device paths, `..` segments, alternate data streams and unknown folders
   are rejected before `stat` or `shell.openPath` is called.
+- **Add a local title.** `game:pick-path` opens the native folder/executable picker and mints an
+  opaque token for the selected path. `game:add-manual` accepts only those tokens, resolves them
+  in main, applies the same absolute-path and containment checks, and persists the entry under
+  `<userData>/games/manual-games.json`. The renderer never submits a path.
+- **Cryo-Freeze.** An opt-in game-mode layer suspends a fixed allowlist of cloud-sync,
+  updater and telemetry processes through the existing durable session path. Profile rules take
+  precedence for any image they already manage. A detected library game without a profile runs
+  a Cryo-Freeze-only session, so the feature is not limited to bundled profiles. The setting is
+  rejected while a session is active; the next session uses the new value.
+- **IRQ affinity.** An opt-in layer enumerates PCI Display, NVMe (`stornvme`) and Net devices,
+  filters to MSI-enabled hardware, and stages `DevicePolicy`/`AssignmentSetOverride` on one
+  physical performance core per selected core. The renderer supplies only a boolean. The
+  session stores every prior registry type/value (including absence) before the first write;
+  restore and crash recovery use that snapshot. Windows reads this policy at device start, so
+  no GPU/NVMe/NIC is restarted during play, and the UI says the change is staged.
 - **Quick launch.** `game:launch` takes a library id. The handler resolves the title from the
-  scan, requires one of its detected executables inside its install root, arms the profile
-  watcher (`setWatching(true)`) and only then calls `shell.openPath` on that `.exe`. MSIX titles
-  with no directly launchable executable are refused with an explanation rather than guessed at.
+  scan (including manual entries), requires one of its detected executables inside its install
+  root, arms the profile watcher (`setWatching(true)`) and only then calls `shell.openPath` on
+  that `.exe`. MSIX titles with no directly launchable executable are refused with an explanation
+  rather than guessed at.
 
-Artwork flow:
+Artwork flow for Steam titles:
 
 ```
-renderer  game:artwork {key,title} (<= 24, zod)
-   -> SteamGridDbService
-      1. disk cache (7 d positive, 1 d negative, 400-entry cap)
-      2. /search/autocomplete/{title} -> exact/containment match, else not-found
-      3. /grids|heroes|logos/game/{id}?types=static in parallel
-      4. filter nsfw/humor/animated/mime + HTTPS SteamGridDB host allowlist
-      5. download <= 8 MiB, magic-byte image check, SHA-256 filename, atomic rename
-      6. return ts-art://artwork/<sha>.<ext>
-   -> protocol handler reads userData/artwork-cache/images only
+renderer  getArtwork(appId) -> game:resolve-artwork {appId} (zod: numeric, <= 32-bit)
+   -> ArtworkResolver
+      1. validate the App ID; invalid ids never become a URL or file name
+      2. stat Steam's library cache for {appId}_library_600x900.jpg, _hero, _header, _logo
+         -> file:// URLs (offline)
+      3. HEAD each missing asset on cdn.akamai.steamstatic.com (4 s timeout)
+         -> official CDN URLs for the ones that exist
+      4. no local and no CDN asset -> placeholder:true, null URLs, built-in plate
+      5. memoise positive results for 6 h and outages for 60 s, dedupe in-flight requests
 ```
 
-The API key lives in the main process (environment or `userData/steamgriddb.key`). No remote URL
-or key crosses the bridge. A 401, timeout, empty match or unavailable CDN becomes a per-title
-`error`/`not-found`, so the grid keeps its placeholder and the UI offers one retry; a missing key
-is a single `not-configured` batch, not 30 card failures. The renderer wraps the grid in an error
-boundary as a last resort.
+`TUNESMITH_STEAM_CACHE_DIR` overrides the default Steam cache directory. The renderer never
+supplies a URL or a path; it receives only URLs built by main, and the grid caches the result per
+game for the session. A per-title placeholder or outage never throws across the bridge.
+
+The legacy keyed SteamGridDB batch channel (`game:artwork`) remains for compatibility. Its API key
+lives in main (environment or `userData/steamgriddb.key`), images are downloaded to
+`userData/artwork-cache` and served as `ts-art://` URLs, and a missing key is a single
+`not-configured` batch rather than per-card failures.
 
 ## 16. Performance OSD
 
@@ -491,3 +542,25 @@ Live status: the ETW sampler was verified against a presenting Chromium GPU proc
 (144 FPS, 128.6 1% low, 6.9 ms). The window has not yet been exercised over a real game, so
 exclusive-fullscreen and anti-cheat compatibility remain supervised checks. See
 `docs/GAME-ENGINE.md` §12.
+
+## 17. Auto-update
+
+Packaged builds start `UpdaterService` after the main window is created. The service configures
+`electron-log` with a 5 MiB `updater.log` under `userData/logs`, then schedules an initial check
+after five seconds and a repeat every six hours. Development builds never schedule a check:
+`app.isPackaged` gates both `start()` and the renderer-facing `check()` method.
+
+`electron-builder` writes `resources/app-update.yml` with the GitHub owner/repository from the
+package publish block. `electron-updater` downloads a newer release automatically; status flows
+to the renderer through `tunesmith:update-status` and pushed updates through
+`tunesmith:update-status-changed`. The footer shows checking/downloading/ready state. The
+renderer's only mutation is `updater.install()`, which the main handler maps to the required
+`tunesmith:install-update` channel and calls `quitAndInstall(false, true)` only when the phase is
+`downloaded`. No URL, path or installer argument crosses the bridge.
+
+Release automation lives in `.github/workflows/release.yml`: a `v*.*.*` tag must match
+`package.json`, then the workflow runs `npm ci`, `npm run build` and
+`npx electron-builder --win --publish always` with `GH_TOKEN`, then publishes the tag release
+with `gh` as a retry-safe final step. The generated NSIS installer and `latest.yml` are attached
+to a published (non-draft) GitHub release. Builds are unsigned unless a Windows signing
+certificate is supplied. Full operational notes: `docs/UPDATER.md`.

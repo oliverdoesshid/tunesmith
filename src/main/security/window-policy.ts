@@ -21,9 +21,10 @@ function contentSecurityPolicy(devUrl: string | null): string {
     "default-src 'none'",
     `script-src ${scriptSrc}`,
     "style-src 'self' 'unsafe-inline'",
-    // `ts-art:` serves SteamGridDB artwork from the main-process cache; remote images
-    // are never loaded by the renderer itself.
-    "img-src 'self' data: ts-art:",
+    // `ts-art:` serves SteamGridDB artwork from the main-process cache. The zero-key
+    // Steam resolver returns `file://` cache hits and Valve CDN URLs; those hosts are
+    // the only remote images the renderer may load.
+    "img-src 'self' data: ts-art: file: https://cdn.akamai.steamstatic.com",
     "font-src 'self' data:",
     `connect-src ${connectSrc}`,
     "base-uri 'none'",

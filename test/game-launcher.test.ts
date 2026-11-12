@@ -15,11 +15,15 @@ import { IPC_CHANNELS } from '../src/shared/channels';
 import type { GameLaunchResult, GameLibraryScanResult, GameStatus, DiscoveredGame } from '../src/shared/game/types';
 import type { ArtworkRequestItem, GameArtworkBatch } from '../src/shared/game/artwork';
 import type { AppState } from '../src/main/app-state-types';
+import type { ShaderCachePruneResult, ShaderCacheStatus } from '../src/shared/shader-cache';
+import type { UpdaterStatus } from '../src/shared/updater';
+import type { UpdaterService } from '../src/main/updater';
 import { idlePostApplyStatus } from '../src/shared/post-apply';
 
 const electronMock = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, ...args: unknown[]) => Promise<unknown>>(),
   openPath: vi.fn(async (_target: string) => ''),
+  showOpenDialog: vi.fn(),
 }));
 
 vi.mock('electron', () => ({
@@ -39,6 +43,9 @@ vi.mock('electron', () => ({
   shell: {
     openPath: electronMock.openPath,
     openExternal: vi.fn(),
+  },
+  dialog: {
+    showOpenDialog: electronMock.showOpenDialog,
   },
 }));
 
@@ -80,6 +87,7 @@ afterEach(async () => {
   electronMock.handlers.clear();
   electronMock.openPath.mockReset();
   electronMock.openPath.mockResolvedValue('');
+  electronMock.showOpenDialog.mockReset();
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -444,6 +452,8 @@ describe('SteamGridDbService', () => {
 
 const STATUS: GameStatus = {
   watching: false,
+  cryoFreeze: false,
+  interruptAffinity: false,
   phase: 'idle',
   watcherHealthy: false,
   active: null,
@@ -457,6 +467,15 @@ const STATUS: GameStatus = {
   pollMs: 2000,
 };
 
+const SHADER_CACHE_STATUS: ShaderCacheStatus = {
+  schemaVersion: 1,
+  scannedAt: '2026-01-01T00:00:00.000Z',
+  roots: [],
+  totals: { fileCount: 0, totalBytes: 0, orphanedFiles: 0, orphanedBytes: 0 },
+  warnings: [],
+  error: null,
+};
+
 const TRUSTED_EVENT = { senderFrame: { url: 'file:///C:/Program%20Files/TuneSmith/index.html' } };
 const UNTRUSTED_EVENT = { senderFrame: { url: 'https://evil.example/' } };
 
@@ -468,6 +487,9 @@ function makeState(
     game: {
       setOnChange: vi.fn(),
       setWatching: vi.fn(async (enabled: boolean) => ({ ...STATUS, watching: enabled })),
+      setCryoFreeze: vi.fn(async (enabled: boolean) => ({ ...STATUS, cryoFreeze: enabled })),
+      setInterruptAffinity: vi.fn(async (enabled: boolean) => ({ ...STATUS, interruptAffinity: enabled })),
+      refreshGameCandidates: vi.fn(async () => undefined),
       hasActiveSession: vi.fn(() => false),
       profileList: vi.fn(() => []),
       evaluate: vi.fn(() => []),
@@ -478,6 +500,19 @@ function makeState(
       onStatus: vi.fn(),
       check: vi.fn(async () => ({})),
     },
+    shaderCache: {
+      status: vi.fn(async () => SHADER_CACHE_STATUS),
+      scan: vi.fn(async () => SHADER_CACHE_STATUS),
+      prune: vi.fn(async (): Promise<ShaderCachePruneResult> => ({
+        ok: true,
+        removedFiles: 0,
+        removedBytes: 0,
+        skippedFiles: 0,
+        warnings: [],
+        message: 'No orphaned DirectX cache files were old enough to prune.',
+        status: SHADER_CACHE_STATUS,
+      })),
+    },
     postApply: {
       setOnStatus: vi.fn(),
       status: vi.fn(() => idlePostApplyStatus()),
@@ -485,9 +520,23 @@ function makeState(
     },
     libraries: {
       scan: vi.fn(async () => scan),
+      addManualGame: vi.fn(async () => null),
+      removeManualGame: vi.fn(async () => false),
     },
     artwork: {
       artworkForGames: vi.fn(artworkForGames),
+    },
+    artworkResolver: {
+      resolve: vi.fn(async (appId: string | number) => ({
+        appId: typeof appId === 'number' ? appId : Number(appId),
+        cover: null,
+        hero: null,
+        header: null,
+        logo: null,
+        source: 'placeholder' as const,
+        placeholder: true,
+        message: null,
+      })),
     },
   } as unknown as AppState;
 }
@@ -524,6 +573,134 @@ async function installedFixture(): Promise<{
 }
 
 describe('launcher IPC routing', () => {
+  it('exposes updater status and the required install-update channel', async () => {
+    const state = makeState(
+      { scannedAt: '2026-01-01T00:00:00.000Z', games: [], errors: [] },
+      async () => ({ configured: false, message: null, items: [] }),
+    );
+    const status: UpdaterStatus = {
+      schemaVersion: 1,
+      phase: 'downloaded',
+      currentVersion: '0.1.0-test',
+      availableVersion: '0.2.0',
+      percent: 100,
+      bytesPerSecond: null,
+      message: 'Update 0.2.0 is ready to install.',
+      checkedAt: '2026-01-01T00:00:00.000Z',
+      isPackaged: true,
+    };
+    const updater = {
+      status: vi.fn(() => status),
+      check: vi.fn(async () => status),
+      install: vi.fn(async () => undefined),
+    } as unknown as UpdaterService;
+    registerIpcHandlers(state, () => null, undefined, updater);
+
+    expect(electronMock.handlers.has('tunesmith:install-update')).toBe(true);
+    expect(electronMock.handlers.has(IPC_CHANNELS.updateStatus)).toBe(true);
+
+    const current = await callIpc(IPC_CHANNELS.updateStatus, undefined);
+    expect(current.ok).toBe(true);
+    if (current.ok) expect((current.value as UpdaterStatus).phase).toBe('downloaded');
+
+    const checked = await callIpc(IPC_CHANNELS.updateCheck, undefined);
+    expect(checked.ok).toBe(true);
+    expect(updater.check).toHaveBeenCalledOnce();
+
+    state.game.hasActiveSession = vi.fn(() => true);
+    const blocked = await callIpc('tunesmith:install-update', undefined);
+    expect(blocked.ok).toBe(false);
+    if (!blocked.ok) expect(blocked.error.message).toMatch(/active game session/i);
+    expect(updater.install).not.toHaveBeenCalled();
+
+    state.game.hasActiveSession = vi.fn(() => false);
+    const installed = await callIpc('tunesmith:install-update', undefined);
+    expect(installed.ok).toBe(true);
+    expect(updater.install).toHaveBeenCalledOnce();
+  });
+
+  it('routes the Cryo-Freeze setting and rejects ambiguous payloads', async () => {
+    const state = makeState(
+      { scannedAt: '2026-01-01T00:00:00.000Z', games: [], errors: [] },
+      async () => ({ configured: false, message: null, items: [] }),
+    );
+    registerIpcHandlers(state, () => null);
+    expect(electronMock.handlers.has(IPC_CHANNELS.gameSetCryoFreeze)).toBe(true);
+
+    const enabled = await callIpc(IPC_CHANNELS.gameSetCryoFreeze, { enabled: true });
+    expect(enabled.ok).toBe(true);
+    if (enabled.ok) expect((enabled.value as GameStatus).cryoFreeze).toBe(true);
+    expect(state.game.setCryoFreeze).toHaveBeenCalledWith(true);
+
+    const invalid = await callIpc(IPC_CHANNELS.gameSetCryoFreeze, { enabled: 'yes' });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.error.code).toBe('invalid-request');
+    expect(state.game.setCryoFreeze).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes the interrupt-affinity setting and rejects ambiguous payloads', async () => {
+    const state = makeState(
+      { scannedAt: '2026-01-01T00:00:00.000Z', games: [], errors: [] },
+      async () => ({ configured: false, message: null, items: [] }),
+    );
+    registerIpcHandlers(state, () => null);
+    expect(electronMock.handlers.has(IPC_CHANNELS.gameSetInterruptAffinity)).toBe(true);
+
+    const enabled = await callIpc(IPC_CHANNELS.gameSetInterruptAffinity, { enabled: true });
+    expect(enabled.ok).toBe(true);
+    if (enabled.ok) expect((enabled.value as GameStatus).interruptAffinity).toBe(true);
+    expect(state.game.setInterruptAffinity).toHaveBeenCalledWith(true);
+
+    const invalid = await callIpc(IPC_CHANNELS.gameSetInterruptAffinity, { enabled: 'yes' });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.error.code).toBe('invalid-request');
+    expect(state.game.setInterruptAffinity).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes shader-cache scans and requires explicit orphan-prune confirmation', async () => {
+    const state = makeState(
+      { scannedAt: '2026-01-01T00:00:00.000Z', games: [], errors: [] },
+      async () => ({ configured: false, message: null, items: [] }),
+    );
+    registerIpcHandlers(state, () => null);
+    expect(electronMock.handlers.has(IPC_CHANNELS.shaderCacheStatus)).toBe(true);
+    expect(electronMock.handlers.has(IPC_CHANNELS.shaderCacheScan)).toBe(true);
+    expect(electronMock.handlers.has(IPC_CHANNELS.shaderCachePrune)).toBe(true);
+
+    const scan = await callIpc(IPC_CHANNELS.shaderCacheScan, { refresh: true });
+    expect(scan.ok).toBe(true);
+    expect(state.shaderCache.scan).toHaveBeenCalledWith(true);
+
+    const unconfirmed = await callIpc(IPC_CHANNELS.shaderCachePrune, { cacheIds: ['directx'] });
+    expect(unconfirmed.ok).toBe(false);
+    if (!unconfirmed.ok) expect(unconfirmed.error.code).toBe('invalid-request');
+    expect(state.shaderCache.prune).not.toHaveBeenCalled();
+
+    const vendor = await callIpc(IPC_CHANNELS.shaderCachePrune, {
+      cacheIds: ['nvidia-dx'],
+      confirm: true,
+    });
+    expect(vendor.ok).toBe(false);
+    expect(state.shaderCache.prune).not.toHaveBeenCalled();
+
+    state.game.hasActiveSession = vi.fn(() => true);
+    const active = await callIpc(IPC_CHANNELS.shaderCachePrune, {
+      cacheIds: ['directx'],
+      confirm: true,
+    });
+    expect(active.ok).toBe(false);
+    if (!active.ok) expect(active.error.message).toMatch(/active game session/i);
+    expect(state.shaderCache.prune).not.toHaveBeenCalled();
+
+    state.game.hasActiveSession = vi.fn(() => false);
+    const pruned = await callIpc(IPC_CHANNELS.shaderCachePrune, {
+      cacheIds: ['directx'],
+      confirm: true,
+    });
+    expect(pruned.ok).toBe(true);
+    expect(state.shaderCache.prune).toHaveBeenCalledWith(['directx']);
+  });
+
   it('registers the artwork, folder and launch channels and validates their payloads', async () => {
     const artworkForGames = vi.fn(async (items: ArtworkRequestItem[]) => ({
       configured: true,
@@ -544,8 +721,18 @@ describe('launcher IPC routing', () => {
     registerIpcHandlers(state, () => null);
 
     expect(electronMock.handlers.has(IPC_CHANNELS.gameArtwork)).toBe(true);
+    expect(electronMock.handlers.has(IPC_CHANNELS.gameResolveArtwork)).toBe(true);
     expect(electronMock.handlers.has(IPC_CHANNELS.gameOpenFolder)).toBe(true);
     expect(electronMock.handlers.has(IPC_CHANNELS.gameLaunch)).toBe(true);
+
+    const resolved = await callIpc(IPC_CHANNELS.gameResolveArtwork, { appId: '730' });
+    expect(resolved.ok).toBe(true);
+    if (resolved.ok) expect((resolved.value as { appId: number | null }).appId).toBe(730);
+    expect(state.artworkResolver.resolve).toHaveBeenCalledWith('730');
+
+    const badAppId = await callIpc(IPC_CHANNELS.gameResolveArtwork, { appId: '../730' });
+    expect(badAppId.ok).toBe(false);
+    if (!badAppId.ok) expect(badAppId.error.code).toBe('invalid-request');
 
     const valid = await callIpc(IPC_CHANNELS.gameArtwork, {
       games: [{ key: 'steam:1', title: 'Test Game' }],
@@ -559,6 +746,85 @@ describe('launcher IPC routing', () => {
     expect(invalid.ok).toBe(false);
     if (!invalid.ok) expect(invalid.error.code).toBe('invalid-request');
     expect(artworkForGames).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes manual game additions and removals, validating every payload', async () => {
+    const fixture = await installedFixture();
+    const state = makeState(
+      { scannedAt: '2026-01-01T00:00:00.000Z', games: [fixture.game], errors: [] },
+      async () => ({ configured: false, message: null, items: [] }),
+    );
+    const libraries = state.libraries as unknown as {
+      addManualGame: ReturnType<typeof vi.fn>;
+      removeManualGame: ReturnType<typeof vi.fn>;
+    };
+    libraries.addManualGame.mockResolvedValue(fixture.game);
+    libraries.removeManualGame.mockResolvedValue(true);
+    registerIpcHandlers(state, () => null);
+
+    expect(electronMock.handlers.has(IPC_CHANNELS.gameAddManual)).toBe(true);
+    expect(electronMock.handlers.has(IPC_CHANNELS.gameRemoveManual)).toBe(true);
+    expect(electronMock.handlers.has(IPC_CHANNELS.gamePickPath)).toBe(true);
+
+    const rawPathAdd = await callIpc(IPC_CHANNELS.gameAddManual, {
+      name: 'Local Fixture',
+      installDir: fixture.installDir,
+      executablePath: fixture.executable,
+    });
+    expect(rawPathAdd.ok).toBe(false);
+    if (!rawPathAdd.ok) expect(rawPathAdd.error.code).toBe('invalid-request');
+    expect(libraries.addManualGame).not.toHaveBeenCalled();
+
+    const unknownTokens = await callIpc(IPC_CHANNELS.gameAddManual, {
+      name: 'Local Fixture',
+      installDirToken: '0'.repeat(36),
+      executableToken: '1'.repeat(36),
+    });
+    expect(unknownTokens.ok).toBe(false);
+    if (!unknownTokens.ok) expect(unknownTokens.error.code).toBe('invalid-request');
+    expect(libraries.addManualGame).not.toHaveBeenCalled();
+
+    libraries.addManualGame.mockResolvedValue(fixture.game);
+    electronMock.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [fixture.installDir] });
+    const folderPick = await callIpc(IPC_CHANNELS.gamePickPath, { kind: 'folder' });
+    expect(folderPick.ok).toBe(true);
+    if (!folderPick.ok) throw new Error('folder picker was rejected');
+    const folder = folderPick.value as { token: string; path: string; kind: string };
+    expect(folder.path).toBe(fixture.installDir);
+    expect(folder.kind).toBe('folder');
+
+    electronMock.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [fixture.executable] });
+    const executablePick = await callIpc(IPC_CHANNELS.gamePickPath, { kind: 'executable' });
+    expect(executablePick.ok).toBe(true);
+    if (!executablePick.ok) throw new Error('executable picker was rejected');
+    const executable = executablePick.value as { token: string; path: string; kind: string };
+    expect(executable.path).toBe(fixture.executable);
+    expect(executable.kind).toBe('executable');
+
+    const added = await callIpc(IPC_CHANNELS.gameAddManual, {
+      name: 'Local Fixture',
+      installDirToken: folder.token,
+      executableToken: executable.token,
+    });
+    expect(added.ok).toBe(true);
+    expect(libraries.addManualGame).toHaveBeenCalledWith({
+      name: 'Local Fixture',
+      installDir: fixture.installDir,
+      executablePath: fixture.executable,
+    });
+
+    const removed = await callIpc(IPC_CHANNELS.gameRemoveManual, { gameId: fixture.game.id });
+    expect(removed.ok).toBe(true);
+    expect(libraries.removeManualGame).toHaveBeenCalledWith(fixture.game.id);
+
+    const invalidRemove = await callIpc(IPC_CHANNELS.gameRemoveManual, { gameId: '../bad' });
+    expect(invalidRemove.ok).toBe(false);
+    if (!invalidRemove.ok) expect(invalidRemove.error.code).toBe('invalid-request');
+    expect(libraries.removeManualGame).toHaveBeenCalledTimes(1);
+
+    const invalidPick = await callIpc(IPC_CHANNELS.gamePickPath, { kind: 'drive' });
+    expect(invalidPick.ok).toBe(false);
+    if (!invalidPick.ok) expect(invalidPick.error.code).toBe('invalid-request');
   });
 
   it('rejects untrusted senders before touching a service', async () => {

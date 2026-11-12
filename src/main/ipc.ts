@@ -7,18 +7,33 @@
  *   - converts exceptions into `{ ok: false, error }` so a stack trace never crosses
  *     the bridge
  */
+import { randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { freemem, totalmem } from 'node:os';
-import { app, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import {
+  app,
+  dialog,
+  ipcMain,
+  shell,
+  type BrowserWindow,
+  type IpcMainInvokeEvent,
+  type OpenDialogOptions,
+} from 'electron';
 import { describeError, isTuneSmithError, TuneSmithError } from '../shared/errors';
 import {
   applyRequestSchema,
   artworkRequestSchema,
+  artworkResolveRequest,
   EVENT_CHANNELS,
+  gameCryoFreezeRequest,
   gameFolderRequest,
+  gameInterruptAffinityRequest,
+  gameIdRequest,
   gameLaunchRequest,
   gameLibraryScanRequest,
+  gamePathPickRequest,
   gameWatchingRequest,
+  manualGameAddRequest,
   healthPinRequest,
   IPC_CHANNELS,
   marketInstallRequest,
@@ -26,6 +41,8 @@ import {
   osdToggleRequest,
   presetIdRequest,
   sessionIdRequest,
+  shaderCachePruneRequest,
+  shaderCacheScanRequest,
   telemetryConsentRequest,
   type ElevationResult,
   type IpcEnvelope,
@@ -33,16 +50,32 @@ import {
 } from '../shared/ipc';
 import type { InstallResult, MarketStatus } from '../shared/market/types';
 import type { HealthFlushResult, HealthStatus } from '../shared/health/types';
+import type { ShaderCachePruneResult, ShaderCacheStatus } from '../shared/shader-cache';
 import { describeActions } from '../shared/game/describe';
-import type { ArtworkRequestItem, GameArtworkBatch } from '../shared/game/artwork';
+import type {
+  ArtworkRequestItem,
+  GameArtworkBatch,
+  ResolvedGameArtwork,
+} from '../shared/game/artwork';
 import type { OsdStatus } from '../shared/game/osd';
-import type { GameLaunchResult, GameLibraryScanResult, GameProfileSummary, GameStatus } from '../shared/game/types';
+import type {
+  DiscoveredGame,
+  GameLaunchResult,
+  GameLibraryScanResult,
+  GamePathPickKind,
+  GameProfileSummary,
+  GameStatus,
+  ManualGameAddRequest,
+  PickedGamePath,
+} from '../shared/game/types';
 import { attachProfileMatches, installedProfilePaths } from '../shared/game/library';
 import { compilePlan } from '../shared/preset/compiler';
 import { buildServiceDependencyGraph, type ServiceDependencyAction, type ServiceDependencyGraph } from '../shared/service-graph';
 import type { AppInfo, MemorySnapshot } from '../shared/session';
 import type { PostApplyStatus } from '../shared/post-apply';
+import { initialUpdaterStatus, type UpdaterStatus } from '../shared/updater';
 import type { AppState } from './app-state-types';
+import type { UpdaterService } from './updater';
 import { runPreflight } from './engine/preflight';
 import { probeSystemRestore } from './platform/restore-point';
 import { readServiceRegistry } from './platform/service-registry';
@@ -90,6 +123,7 @@ export function registerIpcHandlers(
   state: AppState,
   getWindow: () => BrowserWindow | null,
   overlay?: OverlayController,
+  updater?: UpdaterService,
 ): void {
   // Push game mode transitions to the window as they happen. The overlay is a second
   // listener here rather than owning a competing `setOnChange` registration.
@@ -159,6 +193,34 @@ export function registerIpcHandlers(
   });
 
   handle<MemorySnapshot>(IPC_CHANNELS.appMemory, async () => readMemorySnapshot());
+
+  const unavailableUpdaterStatus = (): UpdaterStatus => ({
+    ...initialUpdaterStatus(app.isPackaged, app.getVersion()),
+    phase: 'disabled',
+    message: 'The updater is unavailable in this build.',
+  });
+
+  handle<UpdaterStatus>(IPC_CHANNELS.updateStatus, async () =>
+    updater?.status() ?? unavailableUpdaterStatus(),
+  );
+
+  handle<UpdaterStatus>(IPC_CHANNELS.updateCheck, async () => {
+    if (updater === undefined) return unavailableUpdaterStatus();
+    return updater.check();
+  });
+
+  handle<void>(IPC_CHANNELS.installUpdate, async () => {
+    if (updater === undefined) {
+      throw new TuneSmithError('unavailable', 'The updater is unavailable in this build.');
+    }
+    if (state.game.hasActiveSession()) {
+      throw new TuneSmithError(
+        'invalid-request',
+        'Restore the active game session before installing an update.',
+      );
+    }
+    await updater.install();
+  });
 
   handle<ElevationResult>(IPC_CHANNELS.appElevation, async () => {
     const activeGameSession = state.game.hasActiveSession();
@@ -390,6 +452,24 @@ export function registerIpcHandlers(
 
   handle<HealthFlushResult>(IPC_CHANNELS.healthFlushJournals, async () => state.health.flushJournals());
 
+  handle<ShaderCacheStatus>(IPC_CHANNELS.shaderCacheStatus, async () => state.shaderCache.status());
+
+  handle<ShaderCacheStatus>(IPC_CHANNELS.shaderCacheScan, async (raw) => {
+    const parsed =
+      raw === undefined
+        ? { refresh: false }
+        : parsePayload<{ refresh?: boolean }>(shaderCacheScanRequest, raw);
+    return state.shaderCache.scan(parsed.refresh === true);
+  });
+
+  handle<ShaderCachePruneResult>(IPC_CHANNELS.shaderCachePrune, async (raw) => {
+    const request = parsePayload<{ cacheIds: ['directx']; confirm: true }>(shaderCachePruneRequest, raw);
+    if (state.game.hasActiveSession()) {
+      throw new TuneSmithError('invalid-request', 'Restore the active game session before pruning shader caches.');
+    }
+    return state.shaderCache.prune(request.cacheIds);
+  });
+
   handle<PostApplyStatus>(IPC_CHANNELS.enginePostApply, async () => state.postApply.status());
 
   handle<GameStatus>(IPC_CHANNELS.gameStatus, async () => state.game.status());
@@ -397,6 +477,16 @@ export function registerIpcHandlers(
   handle<GameStatus>(IPC_CHANNELS.gameSetWatching, async (raw) => {
     const { enabled } = parsePayload<{ enabled: boolean }>(gameWatchingRequest, raw);
     return state.game.setWatching(enabled);
+  });
+
+  handle<GameStatus>(IPC_CHANNELS.gameSetCryoFreeze, async (raw) => {
+    const { enabled } = parsePayload<{ enabled: boolean }>(gameCryoFreezeRequest, raw);
+    return state.game.setCryoFreeze(enabled);
+  });
+
+  handle<GameStatus>(IPC_CHANNELS.gameSetInterruptAffinity, async (raw) => {
+    const { enabled } = parsePayload<{ enabled: boolean }>(gameInterruptAffinityRequest, raw);
+    return state.game.setInterruptAffinity(enabled);
   });
 
   handle<GameStatus>(IPC_CHANNELS.gameStop, async () => state.game.stopActive());
@@ -411,6 +501,36 @@ export function registerIpcHandlers(
     return overlay.setEnabled(enabled);
   });
 
+  // Native-picker paths stay in main. The renderer receives a token, never a capability
+  // to name an arbitrary executable in the add request. Tickets expire and the map is
+  // bounded, so a compromised renderer cannot accumulate paths indefinitely.
+  const pickedPaths = new Map<string, { path: string; kind: GamePathPickKind; expiresAt: number }>();
+  const PICK_TTL_MS = 10 * 60 * 1000;
+  const PICK_LIMIT = 50;
+
+  const rememberPickedPath = (selectedPath: string, kind: GamePathPickKind): PickedGamePath => {
+    const now = Date.now();
+    for (const [token, entry] of pickedPaths) {
+      if (entry.expiresAt <= now) pickedPaths.delete(token);
+    }
+    while (pickedPaths.size >= PICK_LIMIT) {
+      const oldest = pickedPaths.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      pickedPaths.delete(oldest);
+    }
+    const token = randomUUID();
+    pickedPaths.set(token, { path: selectedPath, kind, expiresAt: now + PICK_TTL_MS });
+    return { token, path: selectedPath, kind };
+  };
+
+  const resolvePickedPath = (token: string, kind: GamePathPickKind): string => {
+    const entry = pickedPaths.get(token);
+    if (entry === undefined || entry.expiresAt <= Date.now() || entry.kind !== kind) {
+      throw new TuneSmithError('invalid-request', 'Choose the install folder and executable again.');
+    }
+    return entry.path;
+  };
+
   handle<GameLibraryScanResult>(IPC_CHANNELS.gameLibraries, async (raw) => {
     const parsed =
       raw === undefined
@@ -420,10 +540,58 @@ export function registerIpcHandlers(
     return attachProfileMatches(scan, state.game.profileList());
   });
 
+  handle<DiscoveredGame>(IPC_CHANNELS.gameAddManual, async (raw) => {
+    const request = parsePayload<ManualGameAddRequest>(manualGameAddRequest, raw);
+    const input = {
+      name: request.name,
+      installDir: resolvePickedPath(request.installDirToken, 'folder'),
+      executablePath: resolvePickedPath(request.executableToken, 'executable'),
+    };
+    const game = await state.libraries.addManualGame(input);
+    pickedPaths.delete(request.installDirToken);
+    pickedPaths.delete(request.executableToken);
+    void state.game.refreshGameCandidates();
+    return game;
+  });
+
+  handle<boolean>(IPC_CHANNELS.gameRemoveManual, async (raw) => {
+    const { gameId } = parsePayload<{ gameId: string }>(gameIdRequest, raw);
+    const removed = await state.libraries.removeManualGame(gameId);
+    if (removed) void state.game.refreshGameCandidates();
+    return removed;
+  });
+
+  handle<PickedGamePath | null>(IPC_CHANNELS.gamePickPath, async (raw) => {
+    const { kind } = parsePayload<{ kind: GamePathPickKind }>(gamePathPickRequest, raw);
+    const options: OpenDialogOptions =
+      kind === 'folder'
+        ? { title: 'Choose the game install folder', properties: ['openDirectory'] }
+        : {
+            title: 'Choose the game executable',
+            properties: ['openFile'],
+            filters: [{ name: 'Executables', extensions: ['exe'] }],
+          };
+    const parent = getWindow();
+    const result =
+      parent === null || parent.isDestroyed()
+        ? await dialog.showOpenDialog(options)
+        : await dialog.showOpenDialog(parent, options);
+    if (result.canceled) return null;
+    const selected = result.filePaths[0];
+    return selected === undefined ? null : rememberPickedPath(selected, kind);
+  });
+
   handle<GameArtworkBatch>(IPC_CHANNELS.gameArtwork, async (raw) => {
     const { games } = parsePayload<{ games: ArtworkRequestItem[] }>(artworkRequestSchema, raw);
     // Per-title failures are returned inside the batch; an outage must not break the grid.
     return state.artwork.artworkForGames(games);
+  });
+
+  // Zero-key Steam artwork. The renderer supplies only an App ID; every URL is built
+  // from the validated number in the resolver, never taken from the request.
+  handle<ResolvedGameArtwork>(IPC_CHANNELS.gameResolveArtwork, async (raw) => {
+    const { appId } = parsePayload<{ appId: string | number }>(artworkResolveRequest, raw);
+    return state.artworkResolver.resolve(appId);
   });
 
   handle<void>(IPC_CHANNELS.gameOpenFolder, async (raw) => {

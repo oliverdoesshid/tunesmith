@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { OSD_HEIGHT, OSD_WIDTH, placeOverlay } from '../src/main/overlay/geometry';
-import { buildOsdState } from '../src/main/overlay/state';
+import { buildOsdState, osdStateKey } from '../src/main/overlay/state';
 import { clampFrameSampleMs, buildFrameMonitorScript } from '../src/main/platform/game/frame-script';
 import { parseFrameMonitorLine } from '../src/main/platform/game/frame-monitor';
 import { buildForegroundScript, parseForegroundLine, parseTasklist } from '../src/main/platform/game/watcher';
@@ -29,6 +29,8 @@ const FRAME: FrameSample = {
 
 const STATUS: GameStatus = {
   watching: true,
+  cryoFreeze: false,
+  interruptAffinity: false,
   phase: 'active',
   watcherHealthy: true,
   active: {
@@ -165,6 +167,35 @@ describe('OSD state', () => {
     expect(state?.frameSource).toBe('unavailable');
     expect(state?.frameMessage).toBe('ETW session could not start.');
     expect(state?.telemetryMessage).toBe('Hardware temperatures unavailable.');
+  });
+});
+
+describe('OSD push coalescing', () => {
+  const at = Date.parse('2026-01-01T00:10:00.000Z');
+  const base = {
+    status: STATUS,
+    frame: FRAME,
+    frameSource: 'etw',
+    frameMessage: null,
+    telemetry: TELEMETRY,
+  } as const;
+
+  it('treats two rebuilds inside the same second as one frame', () => {
+    const first = buildOsdState({ ...base, nowMs: at });
+    const second = buildOsdState({ ...base, nowMs: at + 400 });
+    if (first === null || second === null) throw new Error('expected an active OSD state');
+
+    // The timestamp moves, but nothing the overlay paints does: no re-render is needed.
+    expect(second.updatedAt).not.toBe(first.updatedAt);
+    expect(osdStateKey(second)).toBe(osdStateKey(first));
+  });
+
+  it('changes the key when a painted value changes', () => {
+    const first = buildOsdState({ ...base, nowMs: at });
+    const second = buildOsdState({ ...base, frame: { ...FRAME, fps: 60 }, nowMs: at + 1_000 });
+    if (first === null || second === null) throw new Error('expected an active OSD state');
+
+    expect(osdStateKey(second)).not.toBe(osdStateKey(first));
   });
 });
 

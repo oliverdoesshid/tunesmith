@@ -1,4 +1,9 @@
-* text=auto eol=lf
-*.ico binary
-*.png binary
-*.icns binary
+.gitattributes text eol=lf
+
+# Preset signatures cover the exact file bytes. Check out LF on every platform
+# so the pinned Ed25519 signatures and published SHA-256 digests stay reproducible.
+presets/community/*.json text eol=lf
+presets/community/*.json.sig text eol=lf
+
+# Generated public marketplace artifacts are regenerated and diffed in CI.
+market/** text eol=lf

@@ -54,6 +54,12 @@ export const FEATURE_DEFINITIONS = [
     label: 'Sessions',
     description: 'Every applied change, interrupted recovery and rollback controls.',
   },
+  {
+    key: 'shaderCache',
+    code: '08',
+    label: 'Shader cache',
+    description: 'DirectX PSO and GPU driver cache health, with metadata-proven orphan cleanup.',
+  },
 ] as const;
 
 export type FeatureKey = (typeof FEATURE_DEFINITIONS)[number]['key'];
@@ -68,6 +74,7 @@ export const DEFAULT_FEATURES: FeatureVisibility = {
   launcher: true,
   gameMode: true,
   sessions: true,
+  shaderCache: true,
 };
 
 const STORAGE_KEY = 'tunesmith.workspace.visibility.v1';

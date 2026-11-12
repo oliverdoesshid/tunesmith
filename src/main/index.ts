@@ -14,6 +14,8 @@ import { installArtworkProtocol, registerArtworkScheme } from './services/artwor
 import { GameOverlayController } from './overlay/controller';
 import { readTelemetry } from './platform/game/telemetry';
 import { initLogging, logger } from './logging';
+import { UpdaterService } from './updater';
+import { EVENT_CHANNELS } from '../shared/channels';
 
 const devUrl = process.env.TS_DEV_SERVER_URL ?? null;
 
@@ -43,6 +45,7 @@ registerArtworkScheme();
 
 let mainWindow: BrowserWindow | null = null;
 let overlay: GameOverlayController | null = null;
+let updater: UpdaterService | null = null;
 
 logger.info('app', 'requesting single-instance lock');
 const gotLock = app.requestSingleInstanceLock();
@@ -194,10 +197,18 @@ if (!gotLock) {
       });
       overlay.updateStatus(state.game.status());
 
+      updater = new UpdaterService({
+        logDirectory: path.join(app.getPath('userData'), 'logs'),
+      });
+      updater.onStatus((status) => {
+        mainWindow?.webContents.send(EVENT_CHANNELS.updateStatus, status);
+      });
+
       // Registered once, before any window exists: a second registration would throw.
       logger.info('app', 'registering IPC handlers');
-      registerIpcHandlers(state, () => mainWindow, overlay);
+      registerIpcHandlers(state, () => mainWindow, overlay, updater);
       await createWindow();
+      updater.start();
 
       // Surface a crashed session immediately rather than waiting for the user to
       // discover it in the Sessions list.
@@ -228,6 +239,7 @@ if (!gotLock) {
     const activeGameSession = state.game.hasActiveSession();
     logger.info('app', 'before-quit', { activeGameSession, quitting });
     overlay?.dispose();
+    updater?.dispose();
     state.health.stop();
     state.postApply.dispose();
     if (quitting) {

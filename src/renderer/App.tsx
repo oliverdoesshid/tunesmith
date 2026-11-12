@@ -3,10 +3,20 @@ import type { PresetSummary } from '../shared/ipc';
 import type { CompiledPlan } from '../shared/preset/compiler';
 import type { AppInfo, EngineProgress, PreflightReport, SessionSummary } from '../shared/session';
 import type { HardwareSpec } from '../shared/types';
-import type { DiscoveredGame, GameLibraryScanResult, GameProfileSummary, GameStatus } from '../shared/game/types';
+import type {
+  DiscoveredGame,
+  GameLibraryScanResult,
+  GamePathPickKind,
+  GameProfileSummary,
+  GameStatus,
+  ManualGameAddRequest,
+  PickedGamePath,
+} from '../shared/game/types';
 import type { OsdStatus } from '../shared/game/osd';
 import type { HealthStatus } from '../shared/health/types';
+import type { ShaderCacheStatus } from '../shared/shader-cache';
 import type { PostApplyStatus } from '../shared/post-apply';
+import type { UpdaterStatus } from '../shared/updater';
 import type { ServiceDependencyGraph } from '../shared/service-graph';
 import { Header } from './components/Chrome';
 import { DashboardHUD } from './components/DashboardHUD';
@@ -17,6 +27,7 @@ import { PlanDialog } from './components/PlanDialog';
 import { InstalledPresets } from './components/InstalledPresets';
 import { PresetBrowser } from './components/PresetBrowser';
 import { SessionPanel, summarizeReports } from './components/SessionPanel';
+import { ShaderCachePanel } from './components/ShaderCachePanel';
 import { SystemHealthPanel } from './components/SystemHealthPanel';
 import { errorMessage, getBridge, isMockBridge } from './lib/bridge';
 import { PostApplyBanner } from './components/PostApplyBanner';
@@ -28,6 +39,25 @@ import {
 } from './lib/features';
 
 type Toast = { kind: 'ok' | 'error' | 'info'; text: string };
+
+function updateLabel(status: UpdaterStatus): string {
+  switch (status.phase) {
+    case 'checking':
+      return 'Checking for updates…';
+    case 'available':
+      return status.availableVersion === null ? 'Update available' : `Update ${status.availableVersion} available`;
+    case 'downloading':
+      return status.percent === null
+        ? 'Downloading update…'
+        : `Downloading update ${status.percent.toFixed(0)}%`;
+    case 'downloaded':
+      return status.availableVersion === null ? 'Update ready to install' : `Update ${status.availableVersion} ready`;
+    case 'error':
+      return 'Update check failed';
+    default:
+      return '';
+  }
+}
 
 export default function App(): ReactNode {
   const bridge = useMemo(() => getBridge(), []);
@@ -43,6 +73,8 @@ export default function App(): ReactNode {
   const [libraries, setLibraries] = useState<GameLibraryScanResult | null>(null);
   const [osd, setOsd] = useState<OsdStatus | null>(null);
   const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [shaderCache, setShaderCache] = useState<ShaderCacheStatus | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<UpdaterStatus | null>(null);
   const [postApply, setPostApply] = useState<PostApplyStatus | null>(null);
 
   const [loading, setLoading] = useState(true);
@@ -59,10 +91,15 @@ export default function App(): ReactNode {
 
   const hasRail = features.hardware || features.health;
   const hasContent =
-    features.marketplace || features.installed || features.launcher || features.gameMode || features.sessions;
+    features.marketplace ||
+    features.installed ||
+    features.launcher ||
+    features.gameMode ||
+    features.sessions ||
+    features.shaderCache;
 
   const reload = useCallback(async () => {
-    const [presetList, sessionList, report, gameStatus, profiles, libraryScan, osdStatus, healthStatus, stabilityStatus] = await Promise.all([
+    const [presetList, sessionList, report, gameStatus, profiles, libraryScan, osdStatus, healthStatus, stabilityStatus, shaderCacheStatus] = await Promise.all([
       bridge.presets.list(),
       bridge.engine.sessions(),
       bridge.safety.preflight(),
@@ -72,6 +109,7 @@ export default function App(): ReactNode {
       bridge.game.osd(),
       bridge.health.status(),
       bridge.engine.postApply(),
+      bridge.shaderCache.scan(),
     ]);
     setPresets(presetList);
     setSessions(sessionList);
@@ -82,6 +120,7 @@ export default function App(): ReactNode {
     setOsd(osdStatus);
     setHealth(healthStatus);
     setPostApply(stabilityStatus);
+    setShaderCache(shaderCacheStatus);
   }, [bridge]);
 
   useEffect(() => {
@@ -111,6 +150,23 @@ export default function App(): ReactNode {
   useEffect(() => bridge.game.onStatus((next) => setGame(next)), [bridge]);
 
   useEffect(() => bridge.health.onStatus((next) => setHealth(next)), [bridge]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void bridge.updater
+      .status()
+      .then((status) => {
+        if (!cancelled) setUpdateStatus(status);
+      })
+      .catch(() => {
+        // Update status is optional UI; a failed status request must not block the workbench.
+      });
+    const unsubscribe = bridge.updater.onStatus((status) => setUpdateStatus(status));
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [bridge]);
 
   useEffect(() => bridge.engine.onPostApply((next) => setPostApply(next)), [bridge]);
 
@@ -210,6 +266,46 @@ export default function App(): ReactNode {
     [bridge],
   );
 
+  const toggleCryoFreeze = useCallback(
+    async (enabled: boolean) => {
+      setBusy(true);
+      try {
+        setGame(await bridge.game.setCryoFreeze(enabled));
+        setToast({
+          kind: 'info',
+          text: enabled
+            ? 'Cryo-Freeze enabled. Non-essential sync and update processes will pause while a game session runs.'
+            : 'Cryo-Freeze disabled.',
+        });
+      } catch (err) {
+        setToast({ kind: 'error', text: errorMessage(err) });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [bridge],
+  );
+
+  const toggleInterruptAffinity = useCallback(
+    async (enabled: boolean) => {
+      setBusy(true);
+      try {
+        setGame(await bridge.game.setInterruptAffinity(enabled));
+        setToast({
+          kind: 'info',
+          text: enabled
+            ? 'IRQ pinning armed. GPU, NVMe and NIC affinity policies will be staged for the next game session and restored on exit.'
+            : 'IRQ pinning disabled.',
+        });
+      } catch (err) {
+        setToast({ kind: 'error', text: errorMessage(err) });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [bridge],
+  );
+
   const toggleOsd = useCallback(
     async (enabled: boolean) => {
       setBusy(true);
@@ -271,6 +367,54 @@ export default function App(): ReactNode {
     }
   }, [bridge]);
 
+  const addManualGame = useCallback(
+    async (input: ManualGameAddRequest): Promise<DiscoveredGame> => {
+      setBusy(true);
+      try {
+        const added = await bridge.game.addManual(input);
+        setLibraries(await bridge.game.libraries(true));
+        setToast({ kind: 'ok', text: `${added.name} was added to the launcher.` });
+        return added;
+      } catch (err) {
+        setToast({ kind: 'error', text: errorMessage(err) });
+        throw err;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [bridge],
+  );
+
+  const removeManualGame = useCallback(
+    async (game: DiscoveredGame): Promise<void> => {
+      setBusy(true);
+      try {
+        const removed = await bridge.game.removeManual(game.id);
+        if (!removed) throw new Error('That manual game entry was not found.');
+        setLibraries(await bridge.game.libraries(true));
+        setToast({ kind: 'ok', text: `${game.name} was removed from the launcher. Game files were not changed.` });
+      } catch (err) {
+        setToast({ kind: 'error', text: errorMessage(err) });
+        throw err;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [bridge],
+  );
+
+  const pickGamePath = useCallback(
+    async (kind: GamePathPickKind): Promise<PickedGamePath | null> => {
+      try {
+        return await bridge.game.pickPath(kind);
+      } catch (err) {
+        setToast({ kind: 'error', text: errorMessage(err) });
+        throw err;
+      }
+    },
+    [bridge],
+  );
+
   const checkHealth = useCallback(async () => {
     setBusy(true);
     try {
@@ -306,6 +450,38 @@ export default function App(): ReactNode {
       setBusy(false);
     }
   }, [bridge, reload]);
+
+  const installUpdate = useCallback(async () => {
+    try {
+      await bridge.updater.install();
+    } catch (err) {
+      setToast({ kind: 'error', text: errorMessage(err) });
+    }
+  }, [bridge]);
+
+  const scanShaderCache = useCallback(async () => {
+    setBusy(true);
+    try {
+      setShaderCache(await bridge.shaderCache.scan(true));
+    } catch (err) {
+      setToast({ kind: 'error', text: errorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  }, [bridge]);
+
+  const pruneShaderCache = useCallback(async () => {
+    setBusy(true);
+    try {
+      const result = await bridge.shaderCache.prune({ cacheIds: ['directx'], confirm: true });
+      setShaderCache(result.status);
+      setToast({ kind: result.ok ? 'ok' : 'error', text: result.message });
+    } catch (err) {
+      setToast({ kind: 'error', text: errorMessage(err) });
+    } finally {
+      setBusy(false);
+    }
+  }, [bridge]);
 
   const pinPreset = useCallback(
     async (presetId: string | null) => {
@@ -469,21 +645,35 @@ export default function App(): ReactNode {
                   games={libraries?.games ?? []}
                   loading={libraries === null}
                   busy={busy}
+                  profiles={gameProfiles}
+                  scanErrors={libraries?.errors ?? []}
                   onBrowseFiles={(game) => void browseGameFiles(game)}
                   onLaunch={(game) => void launchGame(game)}
+                  onAddGame={addManualGame}
+                  onRemoveGame={removeManualGame}
+                  onPickPath={pickGamePath}
+                  onRefreshLibraries={() => void refreshLibraries()}
+                />
+              )}
+              {features.shaderCache && (
+                <ShaderCachePanel
+                  status={shaderCache}
+                  busy={busy}
+                  onScan={() => void scanShaderCache()}
+                  onPrune={() => void pruneShaderCache()}
                 />
               )}
               {features.gameMode && (
                 <GameModePanel
                   status={game}
                   profiles={gameProfiles}
-                  libraries={libraries}
                   osd={osd}
                   busy={busy}
                   onToggle={(enabled) => void toggleGameMode(enabled)}
                   onStop={() => void stopGameSession()}
+                  onToggleCryoFreeze={(enabled) => void toggleCryoFreeze(enabled)}
+                  onToggleInterruptAffinity={(enabled) => void toggleInterruptAffinity(enabled)}
                   onToggleOsd={(enabled) => void toggleOsd(enabled)}
-                  onRefreshLibraries={() => void refreshLibraries()}
                 />
               )}
               {features.sessions && (
@@ -505,6 +695,23 @@ export default function App(): ReactNode {
             ? 'TuneSmith'
             : `TuneSmith ${info.appVersion} · Electron ${info.electronVersion} · ${info.presetCount} preset(s)`}
         </span>
+        {updateStatus !== null &&
+          updateStatus.phase !== 'disabled' &&
+          updateStatus.phase !== 'idle' &&
+          updateStatus.phase !== 'up-to-date' && (
+            <div
+              className={`footer-update footer-update-${updateStatus.phase}`}
+              aria-live="polite"
+              title={updateStatus.message ?? undefined}
+            >
+              <span>{updateLabel(updateStatus)}</span>
+              {updateStatus.phase === 'downloaded' && (
+                <button type="button" className="button button-primary small" onClick={() => void installUpdate()}>
+                  Install update
+                </button>
+              )}
+            </div>
+          )}
         <span className="muted small">{info?.sessionsDir ?? ''}</span>
       </footer>
 

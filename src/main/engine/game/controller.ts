@@ -19,14 +19,19 @@
  *     preference) is worse than a noisy one.
  */
 import { computeAffinityMask, isUsableMask, maskToHex } from '../../../shared/game/affinity';
+import { planInterruptAffinity, type InterruptAffinityPlan } from '../../../shared/game/interrupt-affinity';
 import { selectProfile, type RunningProcess } from '../../../shared/game/matcher';
 import { evaluateGameProfile, isBlocked, watchList, type GameFinding } from '../../../shared/game/policy';
+import { cryoFreezeBudget, cryoFreezeNames, cryoFreezeProfile } from '../../../shared/game/cryo';
 import { evaluateGuards, GUARD_DEFAULTS } from '../../../shared/game/telemetry';
 import { adaptGameProfile, describeMachine } from '../../../shared/game/adapt';
 import type { HardwareSpec } from '../../../shared/types';
 import type { AppliedAdjustment,
   GamePackageInfo,
   GameProfileActions,
+  GameInterruptAffinityApplyResult,
+  GameInterruptAffinityDevice,
+  GameInterruptAffinitySnapshot,
   GameNetworkApplyResult,
   GameNetworkSnapshot,
   GameNetworkTarget,
@@ -39,7 +44,7 @@ import type { AppliedAdjustment,
   GameStatus,
 } from '../../../shared/game/types';
 import type { TimerHoldHandle } from '../../platform/game/timer';
-import { describeError } from '../../../shared/errors';
+import { describeError, TuneSmithError } from '../../../shared/errors';
 import type { PriorityClass } from '../../../shared/types';
 import { clampPollMs, GameWatcher, type GameSnapshot, type WatcherOptions } from '../../platform/game/watcher';
 import type { LoadedProfiles, StoredGameSession, TrackedProcess } from './store';
@@ -79,6 +84,14 @@ export interface GameAdapter {
   captureNetwork?(targets: readonly GameNetworkTarget[]): Promise<GameNetworkSnapshot>;
   applyNetwork?(snapshot: GameNetworkSnapshot, settings: NonNullable<GameProfileActions['network']>): Promise<GameNetworkApplyResult>;
   restoreNetwork?(snapshot: GameNetworkSnapshot): Promise<string[]>;
+  /** Optional interrupt-affinity engine; absence records a skip, never a crash. */
+  inspectInterruptAffinity?(): Promise<GameInterruptAffinityDevice[]>;
+  captureInterruptAffinity?(
+    devices: readonly GameInterruptAffinityDevice[],
+    plan: InterruptAffinityPlan,
+  ): Promise<GameInterruptAffinitySnapshot>;
+  applyInterruptAffinity?(snapshot: GameInterruptAffinitySnapshot): Promise<GameInterruptAffinityApplyResult>;
+  restoreInterruptAffinity?(snapshot: GameInterruptAffinitySnapshot): Promise<string[]>;
 }
 
 /** The controller only starts, stops and replaces a watcher; tests provide a stub. */
@@ -113,6 +126,8 @@ export interface GameControllerDeps {
   /** Called after each processed watcher tick, for the out-of-process OSD. */
   onSnapshot?: (snapshot: GameSnapshot, status: GameStatus) => void;
   createWatcher?: (options: WatcherOptions) => WatcherHandle;
+  /** Library executable names, used to start an automatic session for games without a profile. */
+  knownGames?: () => Promise<readonly string[]>;
 }
 
 /** Ticks a tracked pid must be missing before a session is torn down. */  const EXIT_TICKS = 2;
@@ -137,6 +152,7 @@ export class GameController {
   private onChange: (status: GameStatus) => void;
   private onSnapshot: ((snapshot: GameSnapshot, status: GameStatus) => void) | null;
   private readonly createWatcher: NonNullable<GameControllerDeps['createWatcher']>;
+  private readonly knownGamesProvider: GameControllerDeps['knownGames'];
 
   private profiles: GameProfile[] = [];
   private hardware: HardwareSpec | null;
@@ -144,6 +160,9 @@ export class GameController {
   private topology: CpuTopology | null = null;
 
   private watching = false;
+  private cryoFreeze = false;
+  private interruptAffinity = false;
+  private readonly knownGameNames = new Set<string>();
   private watcherHealthy = false;
   private watcher: WatcherHandle | null = null;
 
@@ -185,6 +204,7 @@ export class GameController {
     this.createWatcher =
       deps.createWatcher ??
       ((options) => new GameWatcher(options));
+    this.knownGamesProvider = deps.knownGames;
   }
 
   /* ---------------------------------------------------------------- *
@@ -242,7 +262,48 @@ export class GameController {
 
     if (this.profiles.length === 0) await this.reloadProfiles();
     this.watching = true;
+    await this.startWatcher();
+    this.emit();
+    return this.status();
+  }
 
+  /** Enable or disable automatic background suspension for the next game session. */
+  async setCryoFreeze(enabled: boolean): Promise<GameStatus> {
+    if (enabled === this.cryoFreeze) return this.status();
+    if (this.active !== null) {
+      throw new TuneSmithError(
+        'invalid-request',
+        'Restore the active game session before changing Cryo-Freeze.',
+      );
+    }
+
+    this.cryoFreeze = enabled;
+    if (this.watching) {
+      this.watcher?.stop();
+      this.watcher = null;
+      this.watcherHealthy = false;
+      await this.startWatcher();
+    }
+    this.emit();
+    return this.status();
+  }
+
+  /** Stage per-device interrupt affinity for the next game session. */
+  async setInterruptAffinity(enabled: boolean): Promise<GameStatus> {
+    if (enabled === this.interruptAffinity) return this.status();
+    if (this.active !== null) {
+      throw new TuneSmithError(
+        'invalid-request',
+        'Restore the active game session before changing interrupt affinity.',
+      );
+    }
+
+    this.interruptAffinity = enabled;
+    this.emit();
+    return this.status();
+  }
+
+  private async startWatcher(): Promise<void> {
     const resolvedPackages = await this.resolvePackages();
     const watched = new Set(watchList(this.profiles));
     // A Store title may launch an executable whose name is not derivable from the PFN;
@@ -250,6 +311,12 @@ export class GameController {
     for (const pkg of resolvedPackages) {
       for (const executable of pkg.executables) watched.add(executable.toLowerCase());
     }
+    if (this.cryoFreeze) {
+      for (const name of cryoFreezeNames()) watched.add(name);
+      await this.loadKnownGames();
+      for (const name of this.knownGameNames) watched.add(name);
+    }
+
     const names = [...watched].sort();
     this.watcher = this.createWatcher({
       watchNames: names,
@@ -264,8 +331,27 @@ export class GameController {
     });
     this.watcher.start();
     this.log(`watching ${names.length} image name(s) every ${this.pollMs} ms`);
-    this.emit();
-    return this.status();
+  }
+
+  /** Refresh the known-game set after a library change; safe to call at any time. */
+  async refreshGameCandidates(): Promise<void> {
+    if (!this.cryoFreeze) return;
+    await this.loadKnownGames();
+  }
+
+  /** Refresh the known-game set from the read-only library scanner. */
+  private async loadKnownGames(): Promise<void> {
+    this.knownGameNames.clear();
+    if (this.knownGamesProvider === undefined) return;
+    try {
+      const names = await this.knownGamesProvider();
+      for (const name of names) {
+        const normalized = name.trim().toLowerCase();
+        if (normalized.endsWith('.exe') && normalized.length <= 260) this.knownGameNames.add(normalized);
+      }
+    } catch (error) {
+      this.log(`known game candidates unavailable: ${describeError(error)}`);
+    }
   }
 
   dispose(): void {
@@ -318,11 +404,15 @@ export class GameController {
     const foreground = snapshot.foreground;
     if (foreground === null) return;
 
-    const profile = selectProfile(this.profiles, foreground);
+    let profile = selectProfile(this.profiles, foreground);
     if (profile === null) {
-      this.suppressedFor = null;
-      this.suppressionExpiresAt = Number.POSITIVE_INFINITY;
-      return;
+      if (this.cryoFreeze && this.knownGameNames.has(foreground.exe.toLowerCase())) {
+        profile = cryoFreezeProfile(foreground.exe);
+      } else {
+        this.suppressedFor = null;
+        this.suppressionExpiresAt = Number.POSITIVE_INFINITY;
+        return;
+      }
     }
     if (this.guardCooldownUntil > this.clock()) return;
     if (this.suppressedFor === foreground.exe.toLowerCase()) {
@@ -434,6 +524,7 @@ export class GameController {
 
     await this.applyGpuPreference(session, adapted.actions, process);
     await this.applyNetwork(session, adapted.actions, process);
+    await this.applyInterruptAffinity(session, topology);
     await this.applyMemoryFlush(session, adapted.actions);
     await this.applyTimerHold(session, adapted.actions);
     await this.applyProcessChanges(session, adapted.actions, process, snapshot, topology);
@@ -599,6 +690,79 @@ export class GameController {
     await this.sessions.save(session);
   }
 
+  private async applyInterruptAffinity(session: StoredGameSession, topology: CpuTopology): Promise<void> {
+    if (!this.interruptAffinity) return;
+
+    const target = 'GPU / NVMe / NIC interrupt affinity';
+    if (
+      this.adapter.inspectInterruptAffinity === undefined ||
+      this.adapter.captureInterruptAffinity === undefined ||
+      this.adapter.applyInterruptAffinity === undefined
+    ) {
+      this.record(session, {
+        kind: 'interrupt-affinity',
+        target,
+        detail: 'Not applied',
+        ok: false,
+        error: 'Interrupt-affinity staging is unavailable in this build.',
+      });
+      await this.sessions.save(session);
+      return;
+    }
+
+    const planned = planInterruptAffinity(topology);
+    if (planned.plan === null) {
+      this.record(session, {
+        kind: 'interrupt-affinity',
+        target,
+        detail: 'Not applied',
+        ok: false,
+        error: planned.reason,
+      });
+      await this.sessions.save(session);
+      return;
+    }
+
+    try {
+      const devices = await this.adapter.inspectInterruptAffinity();
+      if (devices.length === 0) {
+        this.record(session, {
+          kind: 'interrupt-affinity',
+          target,
+          detail: 'No eligible device',
+          ok: false,
+          error: 'No physical GPU, NVMe controller or PCI network adapter was found.',
+        });
+        await this.sessions.save(session);
+        return;
+      }
+
+      // Capture first, persist, then mutate. A crash after the policy write therefore
+      // always leaves the previous per-device registry state on disk.
+      const snapshot = await this.adapter.captureInterruptAffinity(devices, planned.plan);
+      session.interruptAffinity = snapshot;
+      await this.sessions.save(session);
+
+      const result = await this.adapter.applyInterruptAffinity(snapshot);
+      this.record(session, {
+        kind: 'interrupt-affinity',
+        target,
+        detail: `${planned.plan.reason} ${result.message}`,
+        ok: result.ok,
+        ...(result.ok ? {} : { error: result.message }),
+      });
+    } catch (error) {
+      this.record(session, {
+        kind: 'interrupt-affinity',
+        target,
+        detail: 'Failed',
+        ok: false,
+        error: describeError(error),
+      });
+    }
+    await this.sessions.save(session);
+  }
+
   private async applyMemoryFlush(session: StoredGameSession, actions: GameProfileActions): Promise<void> {
     if (actions.flushStandbyMemory !== true) return;
 
@@ -756,7 +920,7 @@ export class GameController {
     }
 
     const rules = actions.backgroundRules ?? [];
-    if (rules.length === 0) return;
+    if (rules.length === 0 && !this.cryoFreeze) return;
 
     const planned: { tracked: TrackedProcess; rulePriority: PriorityClass | null }[] = [];
     let suspendBudget = MAX_SUSPENDED_PER_SESSION;
@@ -789,6 +953,47 @@ export class GameController {
       }
     }
 
+    const explicitNames = new Set(rules.map((rule) => rule.process.toLowerCase()));
+    const plannedPids = new Set(planned.map((entry) => entry.tracked.pid));
+    if (this.cryoFreeze) {
+      const explicitSuspended = planned.filter((entry) => entry.tracked.suspended).length;
+      let autoBudget = Math.max(
+        0,
+        Math.min(
+          MAX_SUSPENDED_PER_SESSION - explicitSuspended,
+          cryoFreezeBudget(topology.logicalProcessors) - explicitSuspended,
+        ),
+      );
+
+      for (const candidate of cryoFreezeNames()) {
+        if (autoBudget <= 0) break;
+        if (explicitNames.has(candidate)) continue;
+
+        const targets = snapshot.running.filter(
+          (target) =>
+            target.exe.toLowerCase() === candidate &&
+            target.pid !== process.pid &&
+            target.pid !== SELF_PID &&
+            !plannedPids.has(target.pid),
+        );
+        for (const target of targets) {
+          if (autoBudget <= 0) break;
+          planned.push({
+            tracked: {
+              pid: target.pid,
+              exe: target.exe,
+              previousPriority: null,
+              suspended: true,
+              cryoFreeze: true,
+            },
+            rulePriority: null,
+          });
+          plannedPids.add(target.pid);
+          autoBudget -= 1;
+        }
+      }
+    }
+
     if (planned.length === 0) return;
 
     // Durable before mutate: every pid and its prior state is on disk before the first
@@ -806,7 +1011,7 @@ export class GameController {
         this.record(session, {
           kind: 'background-suspend',
           target: entry.tracked.exe,
-          detail: `pid ${entry.tracked.pid}`,
+          detail: `${entry.tracked.cryoFreeze === true ? 'Cryo-Freeze · ' : ''}pid ${entry.tracked.pid}`,
           ok: outcome.ok,
           ...(outcome.ok ? {} : { error: 'The process refused suspension.' }),
         });
@@ -979,6 +1184,18 @@ export class GameController {
       }
     }
 
+    if (session.interruptAffinity !== undefined) {
+      if (this.adapter.restoreInterruptAffinity === undefined) {
+        problems.push('interrupt affinity: restore is unavailable in this build');
+      } else {
+        try {
+          problems.push(...(await this.adapter.restoreInterruptAffinity(session.interruptAffinity)));
+        } catch (error) {
+          problems.push(`interrupt-affinity restore failed: ${describeError(error)}`);
+        }
+      }
+    }
+
     session.restoredAt = this.now();
     session.endedAt = session.endedAt ?? session.restoredAt;
     session.phase = 'restored';
@@ -1055,6 +1272,8 @@ export class GameController {
   status(): GameStatus {
     return {
       watching: this.watching,
+      cryoFreeze: this.cryoFreeze,
+      interruptAffinity: this.interruptAffinity,
       phase: this.phase,
       watcherHealthy: this.watcherHealthy,
       active: this.active === null ? null : toView(this.active),
@@ -1109,7 +1328,13 @@ function toView(session: StoredGameSession): GameSessionView {
     endedAt: session.endedAt,
     phase: session.phase === 'restored' ? 'idle' : session.phase,
     adjustments: session.adjustments,
-    suspended: session.processes.filter((entry) => entry.suspended).map((entry) => ({ pid: entry.pid, process: entry.exe })),
+    suspended: session.processes
+      .filter((entry) => entry.suspended)
+      .map((entry) => ({
+        pid: entry.pid,
+        process: entry.exe,
+        ...(entry.cryoFreeze === true ? { cryoFreeze: true } : {}),
+      })),
     restoredAt: session.restoredAt,
     interrupted: session.interrupted,
   };

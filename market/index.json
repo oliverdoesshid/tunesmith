@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/oliverdoesshid/tunesmith",
+  "presets": [
+    {
+      "id": "competitive-fps-low-latency",
+      "name": "Competitive FPS — Low Latency",
+      "version": "1.0.0",
+      "author": "tunesmith-community",
+      "description": "Removes background game recording, disables mouse acceleration and keeps the CPU, PCIe link and USB devices out of low-power states. Targets high-refresh competitive shooters where frame pacing matters more than idle power.",
+      "hardwareSignature": "RAM ≥ 16 GB · SSD",
+      "sha256": "520615a8d9a84596143af25df7118125aee930bfa219b9cba2352844a1ea8980",
+      "signature": "faZGXESHW7dpK79RUGhZ+xfHCHXV3sLrSnxTmo3fDxJ5klMOvJr/Q3tEDeZgaLpHGEMVTjhRxEPWghjRnv77BA==",
+      "downloadUrl": "https://raw.githubusercontent.com/oliverdoesshid/tunesmith/main/presets/community/competitive-fps-low-latency.json",
+      "file": "competitive-fps-low-latency.json",
+      "risk": "moderate",
+      "tags": [
+        "gaming",
+        "latency",
+        "fps"
+      ],
+      "license": "MIT",
+      "profileCount": 2,
+      "requirements": {
+        "cpu": [],
+        "gpu": [],
+        "ram": "≥ 16 GB",
+        "storage": [
+          "SSD"
+        ],
+        "elevation": true,
+        "restorePoint": "preferred"
+      }
+    },
+    {
+      "id": "hdd-latency-relief",
+      "name": "HDD Latency Relief",
+      "version": "1.0.0",
+      "author": "tunesmith-community",
+      "description": "Conservative tuning for machines still booting from a spinning disk: keeps Superfetch and prefetching enabled, stops the drive from spinning down, and avoids the aggressive caching settings that help SSDs but hurt seek-bound hardware.",
+      "hardwareSignature": "HDD",
+      "sha256": "57438c8f157014ea04ef81416b25976f5392c96ab107646ffa581ee57a74f168",
+      "signature": "l02V95z8SBKLCd/lJUHC/k7nLh4ZabD5/+/UP9Dd1yqZ52/IJBCVHUKEcMZjr0euWo99e9+B2AUlDxEmRvBKDQ==",
+      "downloadUrl": "https://raw.githubusercontent.com/oliverdoesshid/tunesmith/main/presets/community/hdd-latency-relief.json",
+      "file": "hdd-latency-relief.json",
+      "risk": "conservative",
+      "tags": [
+        "storage",
+        "hdd",
+        "stability"
+      ],
+      "license": "MIT",
+      "profileCount": 1,
+      "requirements": {
+        "cpu": [],
+        "gpu": [],
+        "ram": null,
+        "storage": [
+          "HDD"
+        ],
+        "elevation": true,
+        "restorePoint": "preferred"
+      }
+    },
+    {
+      "id": "ultra-low-latency-aggressive",
+      "name": "Ultra-Low Latency (Aggressive)",
+      "version": "1.0.0",
+      "author": "tunesmith-community",
+      "description": "Maximum single-machine responsiveness for competitive online play: MSI-X on the GPU and NICs, per-interface TCP acknowledgement tuning, Game DVR and error reporting silenced, telemetry services stopped, and the CPU held at full clock with parking and link-state savings off. Aggressive by design: it requires elevation and a restore point, and it warns on every machine-specific trade-off.",
+      "hardwareSignature": "RAM ≥ 16 GB · SSD",
+      "sha256": "1c73a333d98324e2af855de74d9cf0d4de8e2647231ff55c8ce3923f15d986c1",
+      "signature": "j8twVu77j8pQfYsExTsA2WKEK1aQTk7Zlc1QLgwCWPpMDV76dkEt9fyzhkFpGLA7OYWtV8dzipHojQFL4caVAg==",
+      "downloadUrl": "https://raw.githubusercontent.com/oliverdoesshid/tunesmith/main/presets/community/ultra-low-latency-aggressive.json",
+      "file": "ultra-low-latency-aggressive.json",
+      "risk": "aggressive",
+      "tags": [
+        "gaming",
+        "latency",
+        "fps",
+        "network"
+      ],
+      "license": "MIT",
+      "profileCount": 1,
+      "requirements": {
+        "cpu": [],
+        "gpu": [],
+        "ram": "≥ 16 GB",
+        "storage": [
+          "SSD"
+        ],
+        "elevation": true,
+        "restorePoint": "required"
+      }
+    },
+    {
+      "id": "workstation-throughput",
+      "name": "Workstation Throughput",
+      "version": "1.0.0",
+      "author": "tunesmith-community",
+      "description": "For 32 GB+ creative and compilation workloads: stops telemetry collection, hands the media scheduler a larger share of the CPU, removes the network throttle that Windows applies to multimedia streams and keeps priority on the foreground application.",
+      "hardwareSignature": "RAM ≥ 32 GB",
+      "sha256": "24c10008fbce56a54e43c4de4104374572cc8aaaed1b6c13cafe08e47b2f0790",
+      "signature": "n42RzFjFBezD27UelfGDQ2cMfHCCvhdIRLq/WpI9oP+5jPzx2tX7iEwjX6f8p8DgxWiR0mNvnsHpS6Y+AD2rAw==",
+      "downloadUrl": "https://raw.githubusercontent.com/oliverdoesshid/tunesmith/main/presets/community/workstation-throughput.json",
+      "file": "workstation-throughput.json",
+      "risk": "moderate",
+      "tags": [
+        "workstation",
+        "rendering",
+        "throughput"
+      ],
+      "license": "MIT",
+      "profileCount": 2,
+      "requirements": {
+        "cpu": [],
+        "gpu": [],
+        "ram": "≥ 32 GB",
+        "storage": [],
+        "elevation": true,
+        "restorePoint": "preferred"
+      }
+    }
+  ]
+}

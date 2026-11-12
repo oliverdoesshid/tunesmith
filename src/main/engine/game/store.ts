@@ -14,7 +14,12 @@ import { mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { TuneSmithError } from '../../../shared/errors';
 import { formatGameIssues, gameProfileSchema } from '../../../shared/game/schema';
-import type { AppliedAdjustment, GameNetworkSnapshot, GameProfile } from '../../../shared/game/types';
+import type {
+  AppliedAdjustment,
+  GameInterruptAffinitySnapshot,
+  GameNetworkSnapshot,
+  GameProfile,
+} from '../../../shared/game/types';
 
 export interface ProfileLoadError {
   file: string;
@@ -33,6 +38,8 @@ export interface TrackedProcess {
   /** Null when the priority could not be read before the change. */
   previousPriority: 'Idle' | 'BelowNormal' | 'Normal' | 'AboveNormal' | 'High' | null;
   suspended: boolean;
+  /** True when the automatic Cryo-Freeze layer, not a profile rule, suspended it. */
+  cryoFreeze?: boolean;
   /** True while Windows 11 Efficiency Mode (EcoQoS) is applied to it. */
   ecoMode?: boolean;
 }
@@ -53,6 +60,8 @@ export interface StoredGameSession {
   timerHeld?: boolean;
   /** Prior TCP/adapter values for the game's server interface(s), captured before writing. */
   network?: GameNetworkSnapshot;
+  /** Prior per-device interrupt-affinity registry values, captured before staging. */
+  interruptAffinity?: GameInterruptAffinitySnapshot;
   processes: TrackedProcess[];
   /** Affinity/priority changes on the game itself; they die with the process. */
   game: { affinityApplied: boolean; priorityApplied: boolean };

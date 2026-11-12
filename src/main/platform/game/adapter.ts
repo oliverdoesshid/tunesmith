@@ -22,6 +22,12 @@ import { resolvePackage } from './packages';
 import { readTelemetry } from './telemetry';
 import { detectTopology } from './topology';
 import { applyGameNetwork, captureGameNetwork, inspectGameNetwork, restoreGameNetwork } from './network';
+import {
+  applyInterruptAffinity,
+  captureInterruptAffinity,
+  inspectInterruptAffinity,
+  restoreInterruptAffinity,
+} from '../interrupt-affinity';
 
 export function createSystemGameAdapter(): GameAdapter {
   return {
@@ -43,5 +49,9 @@ export function createSystemGameAdapter(): GameAdapter {
     captureNetwork: captureGameNetwork,
     applyNetwork: applyGameNetwork,
     restoreNetwork: restoreGameNetwork,
+    inspectInterruptAffinity,
+    captureInterruptAffinity,
+    applyInterruptAffinity,
+    restoreInterruptAffinity,
   };
 }

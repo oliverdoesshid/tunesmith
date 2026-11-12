@@ -178,6 +178,36 @@ Guard rails:
 - At most 12 processes may be suspended by one session.
 - Every pid and its prior state is persisted before the suspend call.
 
+### 4.4.1 Automatic Cryo-Freeze
+
+Cryo-Freeze is the opt-in automatic layer on top of the profile rules. It applies the same
+`NtSuspendProcess` primitive and the same durable session record, but selects targets from a
+fixed, code-owned allowlist (`src/shared/game/cryo.ts`) of cloud-sync clients, updater
+processes and the Windows telemetry runner. The policy deny and caution maps are re-applied
+before every activation, so a future edit cannot promote the shell, a security process or a
+launcher into the list.
+
+Behavior:
+
+- The setting is global to Game Mode and applies to the next session; changing it while a
+  session is active is refused, because silently unfreezing or freezing processes mid-game is
+  worse than asking the user to restore first.
+- Explicit profile `backgroundRules` win. If a profile already lowers, eco-modes or suspends an
+  image, Cryo-Freeze does not also suspend it.
+- A session starts for a matching profile as before. If the foreground executable belongs to a
+  detected library game with no profile, the controller starts a Cryo-Freeze-only session, so
+  a game does not need a bundled profile to receive the freeze layer.
+- The automatic budget scales with the machine (2 / 6 / 12 processes for up to 4 / 8 / more
+  logical processors), and the existing 12-per-session ceiling still applies.
+- Candidates are observed at activation. A sync client or updater that starts later in the
+  session is not retroactively frozen; this keeps the feature predictable and avoids polling
+  and suspending newly launched work mid-game.
+- Every automatic pid is written to the session before the suspend call, and restored through
+  the same exit/crash-recovery path as profile suspensions.
+
+Cryo-Freeze is *suspension*, not the EcoQoS `eco-mode` action in §4.5. Cloud sync pauses while
+the game runs and resumes on exit; no file is closed, deleted or terminated.
+
 ### 4.5 Windows 11 Efficiency Mode (EcoQoS)
 
 The `eco-mode` background rule is the middle ground between lowering a priority and
@@ -385,6 +415,53 @@ requires elevation for adapter properties will record the failure instead of sil
 claiming success. Bundled CS2 and Rainbow Six Siege profiles enable the block for their
 moderate-risk sessions; a conservative profile may not use it.
 
+### 4.10.1 Per-device MSI/MSI-X interrupt affinity (staged)
+
+An opt-in Game Mode layer writes the documented Windows per-device interrupt-affinity
+policy for three kinds of hardware:
+
+| Target | Runtime enumeration | Why it is included |
+|---|---|---|
+| GPU | `Get-PnpDevice -Class Display`, PCI instance only | graphics ISR/DPC work benefits from a stable P-core set |
+| NVMe controller | `Get-PnpDevice -Class SCSIAdapter` whose PnP service is `stornvme` | the storage interrupt path is latency-sensitive during streaming |
+| NIC | `Get-PnpDevice -Class Net`, PCI instance only | network receive interrupts should not bounce across CCDs |
+
+The engine writes two values under
+`HKLM\SYSTEM\CurrentControlSet\Enum\<instance>\Device Parameters\Interrupt Management\Affinity Policy`:
+`DevicePolicy = 4` (`IrqPolicySpecifiedProcessors`) and `AssignmentSetOverride`, a
+little-endian 64-bit KAFFINITY mask. It does **not** write `DevicePriority`, change MSI
+enablement, or name a registry path from a profile or the renderer.
+
+**Mask selection.** `src/shared/game/interrupt-affinity.ts` selects one logical processor
+per physical performance core on a hybrid CPU, or one per physical core otherwise. SMT
+siblings are deliberately excluded, and the result is capped to one processor group. A
+machine spanning more than 64 logical processors or more than one group is refused rather
+than assigned to a guessed group. A device is eligible only when its
+`MSISupported` value is already `1`; line-based shared IRQs are not pinned independently.
+
+**Capture, persist, then write.** For every eligible device the platform layer reads the
+current `DevicePolicy` and `AssignmentSetOverride` — including their registry type and
+absence — and records them in `interruptAffinity` in the game session before the first
+write. The allowed prior types are DWORD, QWORD and BINARY; any other type aborts capture,
+because it could not be restored exactly. Restore rewrites the exact prior type/value or
+deletes the value when it was absent, and checks that the PCI parent key still exists so a
+removed device cannot cause a stale Enum key to be recreated. Every device is attempted even
+if another failed, and crash recovery uses the same session record.
+
+**Important Windows constraint.** The affinity policy is read when a device's resources are
+assigned, which in practice means a device restart or reboot. There is no supported
+user-mode API to move an already-running GPU, NVMe controller or NIC to a new interrupt set.
+This build therefore **stages** the policy and never restarts those devices during play; it
+restores the prior values on game exit. A running session's interrupt placement is unchanged
+until Windows next starts the device, and the restored values are likewise read only at that
+next start. The UI says this explicitly, and the write requires administrator rights; a
+refusal is recorded as a failed adjustment rather than hidden.
+
+This is separate from the `device-interrupt` preset action (MSI enablement) and the
+`irq-priority` preset action (`PriorityControl\IRQ<n>Priority`). It is also separate from
+process affinity: the game process may be pinned to the same P-cores, but the interrupt mask
+is a machine-wide per-device policy rather than `SetProcessAffinityMask`.
+
 ### 4.11 Per-machine adaptation (no model, no background service)
 
 A game profile is written for a class of machines, not for the one in front of it. At
@@ -464,14 +541,14 @@ an arbitrary aggressive preset can never destabilise a machine.
 The failure that matters is "the app died while Chrome was suspended". Three mechanisms
 prevent it:
 
-1. **Durable before mutate.** `GameSessionStore.save()` runs before `NtSuspendProcess` and
-   before the GPU registry write.
+1. **Durable before mutate.** `GameSessionStore.save()` runs before `NtSuspendProcess`, the
+   GPU registry write and the interrupt-affinity stage.
 2. **Recovery at startup.** `GameController.start()` reads unfinished session files and
    restores them, marking the session `interrupted` and surfacing a message if anything
    could not be undone.
 3. **Quit is deferred.** `before-quit` prevents the quit, awaits `game.shutdown()` (resume,
-   restore priorities, restore GPU preference, restore per-interface network values), and
-   only then quits.
+   restore priorities, restore GPU preference, restore per-interface network values and
+   restore staged interrupt-affinity policy), and only then quits.
 
 Restore is **best-effort and total**: every step is attempted even if an earlier one failed,
 because a partial restore is worse than a noisy one. Pids that no longer exist are ignored.
@@ -484,7 +561,9 @@ priority, suspend rules carry no priority and priority rules must carry one.
 
 Semantic (`evaluateGameProfile`): protected trigger, protected background process, suspend
 with `conservative` risk, suspension budget, affinity indices that do not exist on this
-machine, processor groups > 64, and network tuning in a conservative profile. Warnings:
+machine, processor groups > 64, and network tuning in a conservative profile. Interrupt
+affinity is a separate global toggle, not a profile action; it warns that administrator
+rights and a device restart/reboot are required for the staged policy to take effect. Warnings:
 non-hybrid CPU with a P-core strategy, power-saving GPU preference, standby flush, launcher
 suspension, timer hold (power cost), network tuning (admin rights, per-interface scope,
 UDP-only skip), and thermal limits tight enough to trip under ordinary load (CPU below
@@ -498,6 +577,7 @@ not retried every tick.
 - Inject code, hook APIs, patch the game executable, or interact with anti-cheat.
 - Kill processes (`suspend` is reversible; `TerminateProcess` is not).
 - Add or start services, install drivers, or change boot configuration.
+- Restart a GPU, NVMe controller or NIC to force a newly staged interrupt-affinity policy.
 - Touch a process in another user's session.
 - Persist anything about a game beyond the session record needed to undo it.
 
@@ -512,7 +592,8 @@ src/shared/game/matcher.ts     trigger matching
 src/shared/game/describe.ts    UI labels
 src/shared/game/library.ts     installed-title to profile matching (pure)
 src/main/platform/game/libraries.ts read-only Steam/Epic/Xbox/GOG discovery
-src/main/services/steamgriddb.ts   SteamGridDB v2 search/artwork + bounded disk cache
+src/main/services/artworkResolver.ts zero-key Steam local-cache + public-CDN resolver
+src/main/services/steamgriddb.ts   legacy keyed SteamGridDB v2 search + bounded disk cache
 src/main/services/game-files.ts    open/launch path validation against the scan
 src/main/services/artwork-*.ts     ts-art protocol + image URL/type rules
 src/renderer/components/GameLauncherGrid.tsx  library grid (cached art, launch, browse)
@@ -522,6 +603,8 @@ src/main/platform/game/control.ts   affinity, priority, suspend, GPU pref, purge
 src/main/platform/game/eco.ts       EcoQoS efficiency-mode batch control
 src/main/platform/game/timer.ts     crash-safe 0.5 ms timer holder child
 src/main/platform/game/network.ts   read-only game-route discovery, TCP/NIC capture/apply/restore
+src/shared/game/interrupt-affinity.ts  one-group P-core mask planning
+src/main/platform/interrupt-affinity.ts  per-device GPU/NVMe/NIC PnP capture/apply/restore
 src/main/platform/game/topology.ts  CPU sets + synthetic fallback
 src/main/platform/game/frame-script.ts  static ETW present-sampler C# body
 src/main/platform/game/frame-monitor.ts child wrapper + strict line parser
@@ -552,16 +635,24 @@ Tested:
 - game network schema/policy, route capture ordering (capture and persist before apply),
   and restore through the game session; the real PowerShell discovery/write path is not
   exercised in unit tests;
+- IRQ-affinity mask planning (SMT deduplication, hybrid P-cores, multi-group refusal),
+  capture-before-apply ordering, session persistence, restore, the active-session toggle
+  guard and the no-eligible-device skip; the live registry write/restore is not exercised;
 - post-apply watchdog: CPU/GPU trip, two-sample DPC trip, freeze-sized stall, stable
   five-minute completion, manual cancellation, and the missing-sensor message;
 - eco-mode apply and switch-off, failed eco restore surfacing, self-pid exclusion and
   Efficiency Mode on a denied or launcher process;
+- Cryo-Freeze: candidate catalog policy filtering, profile-rule precedence, automatic budget,
+  known-library-game activation without a profile, toggle guard during an active session,
+  settings IPC, UI state, and restore through the durable session;
 - timer hold: policy warning, UI label, holder script shape, activation recording,
   exit-time stop, and the unavailable-holder path;
 - launcher path rules and IPC routing: traversal/UNC/device rejection, discovered-root folder
   matching, detected-executable containment, and missing-executable refusal;
 - artwork metadata parsing, HTTPS host allowlist, magic-byte checks, cache restart, missing key,
-  and retry after an outage;
+  and retry after an outage (legacy SteamGridDB);
+- zero-key Steam artwork: App ID validation, exact CDN URLs, local cache precedence, mixed
+  local/CDN assets, placeholder on 404/outage, negative-cache expiry and request deduplication;
 - bundled profiles stay schema-valid and policy-clean;
 - OSD placement, state mapping, ETW line parsing, malformed-value rejection, and watcher
   geometry validation;
@@ -576,10 +667,12 @@ Verified live (read-only):
   is in `Performance Log Users`.
 
 **Not verified:** an actual game launch → suspend → resume cycle, a real quick launch from the
-launcher grid, the standby purge, the timer hold, a live SteamGridDB lookup, and an OSD window
-anchored over a real game (exclusive fullscreen is the main risk). The game paths need a real session with elevation;
-the artwork path needs a live API key. Neither is something
-a development run should perform unasked on a working machine. Treat the first session as
+launcher grid, the standby purge, the timer hold, a live SteamGridDB lookup, a live Steam CDN/local
+cache round-trip, the live per-device interrupt-affinity registry write/restore and its post-reboot
+interrupt placement, and an OSD window anchored over a real game (exclusive fullscreen is the main
+risk). The game paths, including the affinity write, need a real session with elevation; the legacy
+artwork path needs a live API key. None of these is something a development run should perform
+unasked on a working machine. Treat the first session as
 a supervised test: start with the esports profile, confirm the adjust/restore pair (including
 the timer holder stopping on exit), and only then try a profile that suspends processes.
 
@@ -593,12 +686,18 @@ engine.
 ## 11. Launcher integration
 
 The launcher is an entry point into this engine, not a second engine. `GameLauncherGrid` shows the
-scanner's titles and requests artwork in bounded batches; it never executes or opens a path
-itself. `game:launch` re-resolves the title from the scan, requires a detected `.exe` inside its
-install root, calls `setWatching(true)`, then `shell.openPath` on that executable. The watcher
+scanner's titles plus user-added manual entries and resolves Steam covers in bounded per-app
+batches; it never executes or opens a path itself. Selecting a row opens the title's settings in
+place; Game Mode does not repeat the library list. `game:pick-path` returns an opaque token plus
+the selected path; `game:add-manual` accepts only those tokens, resolves them in main, applies the
+same absolute-path/containment checks, and stores the entry in
+`<userData>/games/manual-games.json`. The renderer never names a path in the add request.
+`game:launch` re-resolves the title from the scan, requires a detected `.exe` inside its install
+root, calls `setWatching(true)`, then `shell.openPath` on that executable. The watcher
 then matches the foreground process exactly as it would if the user had launched the game from
 Steam. `game:open-folder` similarly opens only a discovered install root. Path rules live in
-`src/main/services/game-files.ts`; SteamGridDB and `ts-art://` live in `src/main/services/`.
+`src/main/services/game-files.ts`; the Steam artwork resolver, legacy SteamGridDB cache and
+`ts-art://` live in `src/main/services/`.
 
 ## 12. Performance OSD
 

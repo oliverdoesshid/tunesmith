@@ -55,3 +55,31 @@ export function buildOsdState(input: OsdStateInput): OsdState | null {
     updatedAt: new Date(nowMs).toISOString(),
   };
 }
+
+/**
+ * Identity of one drawn OSD frame, used to drop IPC pushes that cannot change a pixel.
+ *
+ * `updatedAt` is deliberately excluded because it changes on every build, and `elapsedMs`
+ * is cut to whole seconds because that is the resolution the overlay actually displays.
+ * Everything else here is painted, so a change in any of it must still be sent.
+ */
+export function osdStateKey(state: OsdState): string {
+  return [
+    state.pid,
+    state.profileName,
+    state.exe,
+    state.startedAt,
+    Math.floor(state.elapsedMs / 1000),
+    state.fps,
+    state.low1Fps,
+    state.frameTimeMs,
+    state.cpuTempC,
+    state.gpuTempC,
+    state.powerDrawW,
+    state.applied,
+    state.skipped,
+    state.frameSource,
+    state.frameMessage,
+    state.telemetryMessage,
+  ].join('\u0001');
+}

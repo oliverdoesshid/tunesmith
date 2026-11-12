@@ -3,12 +3,13 @@ import cyberpunk from '../presets/games/cyberpunk-2077.json';
 import esports from '../presets/games/esports-low-latency.json';
 import eco from '../presets/games/efficiency-eco.json';
 import siege from '../presets/games/rainbow-six-siege.json';
+import streaming from '../presets/games/tiktok-live-studio-streaming.json';
 import { describeActions } from '../src/shared/game/describe';
 import { evaluateGameProfile, isBlocked, watchList } from '../src/shared/game/policy';
 import { gameProfileSchema } from '../src/shared/game/schema';
 import type { CpuTopology } from '../src/shared/game/types';
 
-const BUNDLED: unknown[] = [cyberpunk, esports, eco, siege];
+const BUNDLED: unknown[] = [cyberpunk, esports, eco, siege, streaming];
 
 /** A plain 8-thread machine: nothing may depend on hybrid cores to stay safe. */
 const TOPOLOGY: CpuTopology = {

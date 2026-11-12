@@ -23,18 +23,25 @@ import type { HardwareSpec } from '../../shared/types';
 import { describeActions } from '../../shared/game/describe';
 import { evaluateGameProfile } from '../../shared/game/policy';
 import { gameProfileSchema } from '../../shared/game/schema';
-import type { ArtworkRequestItem, GameArtwork } from '../../shared/game/artwork';
+import type { ArtworkRequestItem, GameArtwork, ResolvedGameArtwork } from '../../shared/game/artwork';
 import type { OsdStatus } from '../../shared/game/osd';
 import type { GameLibraryScanResult, GameProfile, GameProfileSummary, GameStatus } from '../../shared/game/types';
 import { attachProfileMatches, installedProfilePaths } from '../../shared/game/library';
 import type { MarketStatus } from '../../shared/market/types';
 import type { HealthFlushResult, HealthStatus } from '../../shared/health/types';
+import type {
+  ShaderCachePruneRequest,
+  ShaderCachePruneResult,
+  ShaderCacheStatus,
+} from '../../shared/shader-cache';
 import { idlePostApplyStatus, type PostApplyStatus } from '../../shared/post-apply';
+import { initialUpdaterStatus } from '../../shared/updater';
 
 import cyberpunkGame from '../../../presets/games/cyberpunk-2077.json';
 import esportsGame from '../../../presets/games/esports-low-latency.json';
 import ecoGame from '../../../presets/games/efficiency-eco.json';
 import siegeGame from '../../../presets/games/rainbow-six-siege.json';
+import streamingGame from '../../../presets/games/tiktok-live-studio-streaming.json';
 import competitiveFps from '../../../presets/community/competitive-fps-low-latency.json';
 import ultraLowLatency from '../../../presets/community/ultra-low-latency-aggressive.json';
 import workstation from '../../../presets/community/workstation-throughput.json';
@@ -142,7 +149,7 @@ function summarize(preset: Preset, spec: HardwareSpec): PresetSummary {
 }
 
 function loadGameProfiles(): GameProfile[] {
-  const parsed = [cyberpunkGame, esportsGame, ecoGame, siegeGame].flatMap((candidate) => {
+  const parsed = [cyberpunkGame, esportsGame, ecoGame, siegeGame, streamingGame].flatMap((candidate) => {
     const result = gameProfileSchema.safeParse(candidate);
     return result.success ? [result.data] : [];
   });
@@ -212,6 +219,35 @@ function mockArtwork(key: string, title: string): GameArtwork {
   };
 }
 
+/** Same shape as the real resolver, using generated SVG data URLs for the preview. */
+function mockResolvedArtwork(appId: string | number): ResolvedGameArtwork {
+  const id = typeof appId === 'number' ? appId : Number(appId);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return {
+      appId: null,
+      cover: null,
+      hero: null,
+      header: null,
+      logo: null,
+      source: 'placeholder',
+      placeholder: true,
+      message: 'Preview only: invalid Steam App ID.',
+    };
+  }
+
+  const art = mockArtwork(`steam:${String(id)}`, `Steam ${String(id)}`);
+  return {
+    appId: id,
+    cover: art.grid === null ? null : { url: art.grid.url, origin: 'steam-cdn' },
+    hero: art.hero === null ? null : { url: art.hero.url, origin: 'steam-cdn' },
+    header: art.hero === null ? null : { url: art.hero.url, origin: 'steam-cdn' },
+    logo: art.logo === null ? null : { url: art.logo.url, origin: 'steam-cdn' },
+    source: 'steam-cdn',
+    placeholder: false,
+    message: null,
+  };
+}
+
 export function createMockBridge(): TuneSmithApi {
   const presets = loadPresets();
   const gameProfiles = loadGameProfiles();
@@ -253,8 +289,65 @@ export function createMockBridge(): TuneSmithApi {
     },
   };
 
+  let shaderCacheStatus: ShaderCacheStatus = {
+    schemaVersion: 1,
+    scannedAt: '2026-01-01T00:00:00.000Z',
+    roots: [
+      {
+        id: 'directx',
+        label: 'DirectX PSO cache',
+        provider: 'directx',
+        displayPath: 'C:\\Users\\Preview\\AppData\\Local\\D3DSCache',
+        exists: true,
+        readable: true,
+        orphanSupport: 'metadata',
+        fileCount: 118,
+        totalBytes: 1_048_576_000,
+        orphanedFileCount: 3,
+        orphanedBytes: 12_582_912,
+        newestMtimeMs: Date.parse('2026-01-01T00:00:00.000Z'),
+        warnings: [],
+      },
+      {
+        id: 'nvidia-dx',
+        label: 'NVIDIA DXCache',
+        provider: 'nvidia',
+        displayPath: 'C:\\Users\\Preview\\AppData\\Local\\NVIDIA\\DXCache',
+        exists: true,
+        readable: true,
+        orphanSupport: 'opaque',
+        fileCount: 2_400,
+        totalBytes: 3_435_973_836,
+        orphanedFileCount: 0,
+        orphanedBytes: 0,
+        newestMtimeMs: Date.parse('2026-01-01T00:00:00.000Z'),
+        warnings: [],
+      },
+      {
+        id: 'amd-dx',
+        label: 'AMD DxCache',
+        provider: 'amd',
+        displayPath: 'C:\\Users\\Preview\\AppData\\Local\\AMD\\DxCache',
+        exists: false,
+        readable: true,
+        orphanSupport: 'opaque',
+        fileCount: 0,
+        totalBytes: 0,
+        orphanedFileCount: 0,
+        orphanedBytes: 0,
+        newestMtimeMs: null,
+        warnings: [],
+      },
+    ],
+    totals: { fileCount: 2_518, totalBytes: 4_484_549_836, orphanedFiles: 3, orphanedBytes: 12_582_912 },
+    warnings: [],
+    error: null,
+  };
+
   let gameStatus: GameStatus = {
     watching: false,
+    cryoFreeze: false,
+    interruptAffinity: false,
     phase: 'idle',
     watcherHealthy: false,
     active: null,
@@ -440,6 +533,8 @@ export function createMockBridge(): TuneSmithApi {
     bridgeVersion: 1,
     mock: true,
 
+    getArtwork: async (appId: string | number) => mockResolvedArtwork(appId),
+
     app: {
       info: async () => info,
       memory: async (): Promise<MemorySnapshot> => ({
@@ -458,6 +553,15 @@ export function createMockBridge(): TuneSmithApi {
 
     hardware: {
       get: async () => MOCK_SPEC,
+    },
+
+    updater: {
+      status: async () => initialUpdaterStatus(false, info.appVersion),
+      check: async () => initialUpdaterStatus(false, info.appVersion),
+      install: async () => {
+        throw new Error('Updates are unavailable in the browser preview.');
+      },
+      onStatus: () => () => undefined,
     },
 
     presets: {
@@ -487,6 +591,36 @@ export function createMockBridge(): TuneSmithApi {
 
     safety: {
       preflight: async () => preflight,
+    },
+
+    shaderCache: {
+      status: async () => shaderCacheStatus,
+      scan: async () => {
+        shaderCacheStatus = { ...shaderCacheStatus, scannedAt: new Date().toISOString() };
+        return shaderCacheStatus;
+      },
+      prune: async (request: ShaderCachePruneRequest): Promise<ShaderCachePruneResult> => {
+        if (!request.confirm) throw new Error('Shader cache pruning must be confirmed.');
+        const removedFiles = shaderCacheStatus.totals.orphanedFiles;
+        const removedBytes = shaderCacheStatus.totals.orphanedBytes;
+        shaderCacheStatus = {
+          ...shaderCacheStatus,
+          scannedAt: new Date().toISOString(),
+          roots: shaderCacheStatus.roots.map((root) =>
+            root.id === 'directx' ? { ...root, orphanedFileCount: 0, orphanedBytes: 0 } : root,
+          ),
+          totals: { ...shaderCacheStatus.totals, orphanedFiles: 0, orphanedBytes: 0 },
+        };
+        return {
+          ok: true,
+          removedFiles,
+          removedBytes,
+          skippedFiles: 0,
+          warnings: [],
+          message: `Preview: removed ${removedFiles} orphaned DirectX cache file(s); no files were touched.`,
+          status: shaderCacheStatus,
+        };
+      },
     },
 
     health: {
@@ -657,8 +791,19 @@ export function createMockBridge(): TuneSmithApi {
       status: async () => gameStatus,
       setWatching: async (enabled: boolean) =>
         setGameStatus({ ...gameStatus, watching: enabled, watcherHealthy: false }),
+      setCryoFreeze: async (enabled: boolean) =>
+        setGameStatus({ ...gameStatus, cryoFreeze: enabled }),
+      setInterruptAffinity: async (enabled: boolean) =>
+        setGameStatus({ ...gameStatus, interruptAffinity: enabled }),
       profiles: async () => gameSummaries,
       libraries: async () => libraryScan,
+      addManual: async () => {
+        throw new Error('Manual games can only be added in the desktop app.');
+      },
+      removeManual: async () => {
+        throw new Error('Manual games can only be changed in the desktop app.');
+      },
+      pickPath: async () => null,
       artwork: async (items: ArtworkRequestItem[]) => ({
         configured: true,
         message: null,

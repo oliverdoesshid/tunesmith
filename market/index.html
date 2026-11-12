@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#171a21" />
+    <meta
+      name="description"
+      content="Verified community tuning presets for TuneSmith. SHA-256 digests and Ed25519 signatures on every entry."
+    />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'"
+    />
+    <title>TuneSmith &mdash; Community Preset Market</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="wrap">
+        <a class="brand" href="./" aria-label="TuneSmith preset market home">
+          <span class="brand-mark" aria-hidden="true">TS</span>
+          <span class="brand-text">TuneSmith <span>/ Market</span></span>
+        </a>
+        <nav class="topnav" aria-label="Project links">
+          <a href="https://github.com/oliverdoesshid/tunesmith" rel="noopener noreferrer">Repository</a>
+          <a href="https://github.com/oliverdoesshid/tunesmith/releases/latest" rel="noopener noreferrer">Download app</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="hero">
+        <p class="eyebrow">COMMUNITY PRESETS / STATIC CATALOG</p>
+        <h1>Verified tuning.<br /><span>Zero guesswork.</span></h1>
+        <p class="lede">
+          Every preset here is signed by its publisher and hashed at the byte level. TuneSmith re-checks the
+          SHA-256 digest and Ed25519 signature before a single registry value is touched.
+        </p>
+        <div class="stats">
+          <div class="stat">
+            <span id="stat-total">&mdash;</span>
+            <small>VERIFIED PRESETS</small>
+          </div>
+          <div class="stat">
+            <span>ED25519</span>
+            <small>PUBLISHER SIGNATURE</small>
+          </div>
+          <div class="stat">
+            <span>SHA-256</span>
+            <small>PAYLOAD INTEGRITY</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="controls" aria-label="Filter presets">
+        <div class="search-field">
+          <label for="preset-search">Search presets</label>
+          <input
+            id="preset-search"
+            type="search"
+            placeholder="Name, author, tag or hardware"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <div class="filter-field">
+          <label for="risk-filter">Risk level</label>
+          <select id="risk-filter">
+            <option value="all">All levels</option>
+            <option value="conservative">Conservative</option>
+            <option value="moderate">Moderate</option>
+            <option value="aggressive">Aggressive</option>
+          </select>
+        </div>
+        <p id="result-count" class="result-count" aria-live="polite">Loading&hellip;</p>
+      </section>
+
+      <div id="catalog-status" class="catalog-status" role="status">Loading verified catalog&hellip;</div>
+
+      <section id="preset-grid" class="preset-grid" aria-label="Community presets" hidden></section>
+
+      <div id="empty-state" class="empty-state" hidden>
+        <strong>No presets match those filters.</strong>
+        <p>Clear the search or choose a different risk level.</p>
+      </div>
+
+      <aside id="install-hint" class="install-hint" hidden>
+        <strong>TuneSmith did not open?</strong>
+        One-click links target the <code>tunesmith://</code> protocol. If TuneSmith does not open,
+        download the preset and its <code>.sig</code> file and place both in
+        <code>%APPDATA%\TuneSmith\presets\community</code>, then restart TuneSmith. Keeping the
+        <code>.sig</code> preserves the publisher's signature, but presets copied here load as
+        unverified because they have no signed catalog entry.
+      </aside>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap">
+        <p>
+          Each entry carries a detached Ed25519 signature over the exact preset bytes and a SHA-256 digest.
+          Signatures are verified against TuneSmith's pinned publisher key before publication.
+        </p>
+        <p>
+          <a href="https://github.com/oliverdoesshid/tunesmith" rel="noopener noreferrer">Source</a>
+          <span aria-hidden="true"> / </span>
+          <a href="./index.json">Catalog JSON</a>
+          <span aria-hidden="true"> / </span>
+          <a href="https://github.com/oliverdoesshid/tunesmith/releases/latest" rel="noopener noreferrer">Get TuneSmith</a>
+        </p>
+      </div>
+    </footer>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

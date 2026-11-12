@@ -1,0 +1,97 @@
+name: Publish preset market
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "presets/community/**"
+      - "market/**"
+      - "scripts/generateMarketIndex.ts"
+      - "scripts/run-market-index.mjs"
+      - "src/shared/market/index-schema.ts"
+      - "src/shared/preset/**"
+      - "src/shared/types.ts"
+      - "src/main/security/keys.ts"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - ".github/workflows/publish-market.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Regenerate the marketplace index
+        run: npm run market:index
+
+      - name: Verify the committed index is current
+        run: git diff --exit-code -- market/index.json
+
+      - name: Stage the Pages artifact
+        run: |
+          mkdir -p _site/market
+          cp -R market/. _site/market/
+          touch _site/.nojekyll
+
+      - name: Add a root redirect to the market
+        run: |
+          cat > _site/index.html <<'HTML'
+          <!doctype html>
+          <html lang="en">
+            <head>
+              <meta charset="utf-8" />
+              <meta http-equiv="refresh" content="0; url=./market/" />
+              <link rel="canonical" href="./market/" />
+              <title>TuneSmith Preset Market</title>
+            </head>
+            <body>
+              <p><a href="./market/">Open the TuneSmith Preset Market</a></p>
+            </body>
+          </html>
+          HTML
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
