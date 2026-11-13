@@ -55,7 +55,7 @@ compromised renderer could at most probe local image existence, not read pixels 
 | T2 | Preset writes a persistence key (`Run`, `Winlogon`, `IFEO`, `AppInit`) | prefix **and** pattern denylist (`\CurrentVersion\Run*` catches HKCU, HKLM and WOW6432Node mirrors); blocked regardless of risk tier | low |
 | T3 | Preset disables Defender/firewall/update/audio | protected-service map with per-service reasons; hard block | low |
 | T4 | Preset causes a boot loop | `Session Manager`, `Services`, `Class`, `SafeBoot`, `CI`, `DeviceGuard` blocked; driver config out of scope; restore point + journal | medium (boot-time keys outside the vocabulary are not reachable, but a legitimate-looking tweak can still degrade stability) |
-| T5 | Malicious preset smuggled into the library | index with SHA-256 per file; unlisted files rejected; bundled and marketplace signatures verified against pinned keys; duplicate ids rejected | medium — see §4, a stock build ships without a marketplace curator key |
+| T5 | Malicious preset smuggled into the library | index with SHA-256 per file; unlisted files rejected; bundled and marketplace signatures verified against pinned keys; duplicate ids rejected | medium — see §4, the default catalog is signed by the pinned publisher key |
 | T6 | Renderer XSS → privilege escalation | `contextIsolation`, `sandbox`, no `nodeIntegration`, strict CSP, navigation/window/webview denial, permission denial, sender check, zod re-validation | low |
 | T7 | Two sessions interleave | `mkdir` lock with holder record and stale takeover | low |
 | T8 | Crash mid-apply leaves the machine half-tuned | durable-before-mutate, append-only journal, conservative recovery rollback | low |
@@ -91,16 +91,16 @@ Marketplace entries add a second signed layer:
 
 - the publisher signs the canonical catalog, and the client refuses an unknown `keyId`;
 - each entry carries a detached Ed25519 signature over the SHA-256 of its canonical payload;
-- the key ring comes from `TUNESMITH_MARKET_KEYS` or `market/config.json`, and is empty by
-  default so the marketplace fails closed;
+- the key ring comes from `TUNESMITH_MARKET_KEYS` or `market/config.json`; when neither is
+  present it falls back to the pinned publisher key used for bundled presets;
 - fetches are HTTPS-only (loopback HTTP for development), and main re-verifies the payload and
   entry before writing canonical bytes into the user preset directory.
 
-A stock build therefore has no marketplace curator key. That is intentional: verification is
-implemented, but publishing a default catalog is still an operational step. Editing both a
-bundled preset and its local digest cannot forge the pinned signature; editing a marketplace
-entry cannot forge the publisher signature without its private key. Key rotation and a hosted
-default catalog remain release work, not gaps in the verifier.
+A stock build therefore trusts the published Pages catalog through the same pinned key it
+already uses for bundled presets. Editing both a bundled preset and its local digest cannot
+forge the pinned signature; editing a marketplace entry cannot forge the publisher signature
+without its private key. Pointing the app at a different catalog requires an explicit key
+ring, which replaces the default. Key rotation remains release work, not a gap in the verifier.
 
 ## 5. Privilege model
 

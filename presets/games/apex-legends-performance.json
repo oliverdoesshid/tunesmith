@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "apex-legends-performance",
+  "name": "Apex Legends — Performance",
+  "version": "1.0.0",
+  "description": "Keeps Apex Legends on the performance cores with High priority, the high-performance GPU and the High performance power plan for the match. Browsers and downloaders are deprioritised while voice chat stays usable.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "moderate",
+  "trigger": { "exe": "r5apex.exe" },
+  "actions": {
+    "affinity": { "strategy": "performance-cores" },
+    "priority": "High",
+    "gpuPreference": "high-performance",
+    "powerPlan": "high-performance",
+    "backgroundRules": [
+      { "process": "chrome.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "msedge.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "firefox.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "Discord.exe", "action": "lower-priority", "priority": "BelowNormal" }
+    ]
+  },
+  "guards": {
+    "maxCpuTempC": 90,
+    "maxGpuTempC": 87,
+    "onBattery": "restore",
+    "cooldownSeconds": 180
+  },
+  "notes": [
+    "The power-plan switch is session-scoped: the exact plan that was active before the game is restored when the session ends, including after a crash.",
+    "Browsers are lowered to Idle, not suspended, so downloads and tabs survive the match.",
+    "Discord stays at BelowNormal so a party call remains responsive.",
+    "Apex uses the Source engine and UDP game traffic; no TCP-only network values are applied.",
+    "Thermal guard: above 90°C CPU or 87°C GPU the profile releases and waits 3 minutes before re-applying."
+  ]
+}

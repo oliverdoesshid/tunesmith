@@ -6,6 +6,7 @@
  * name a shell command, a path to execute, or a raw process id.
  */
 import { z } from 'zod';
+import { POWER_PLAN_IDS } from '../power';
 import { PROCESS_NAME_RE } from '../preset/schema';
 
 export const GAME_LIMITS = {
@@ -81,6 +82,7 @@ const actionsSchema = z.strictObject({
   network: gameNetworkSettingsSchema.optional(),
   flushStandbyMemory: z.boolean().optional(),
   timerHold: z.boolean().optional(),
+  powerPlan: z.enum(POWER_PLAN_IDS).optional(),
   backgroundRules: z.array(backgroundRuleSchema).max(GAME_LIMITS.maxBackgroundRules).optional(),
 });
 

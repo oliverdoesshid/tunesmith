@@ -53,7 +53,7 @@ const TASKLIST_RETRY_BASE_MS = 1_000;
 const TASKLIST_RETRY_MAX_MS = 10_000;
 
 export function clampPollMs(value: number): number {
-  if (!Number.isFinite(value)) return 2_000;
+  if (!Number.isFinite(value)) return 10_000;
   return Math.min(10_000, Math.max(750, Math.round(value)));
 }
 

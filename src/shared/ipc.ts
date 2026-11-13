@@ -39,6 +39,7 @@ import type {
   PickedGamePath,
 } from './game/types';
 import type { InstallResult, MarketStatus } from './market/types';
+import type { PublishCandidate, PublishConfig, PublishResult } from './market/publish';
 import type { HealthFlushResult, HealthStatus } from './health/types';
 import type {
   ShaderCachePruneRequest,
@@ -47,6 +48,11 @@ import type {
 } from './shader-cache';
 import type { PostApplyStatus } from './post-apply';
 import type { UpdaterStatus } from './updater';
+import type {
+  DiagnosticsExportRequest,
+  DiagnosticsExportResult,
+  DiagnosticsStatus,
+} from './diagnostics/types';
 
 // Re-exported so main-process code can import the contract from one place.
 export { EVENT_CHANNELS, IPC_CHANNELS };
@@ -148,12 +154,31 @@ export const telemetryConsentRequest = z.strictObject({
   consent: z.boolean(),
 });
 
+export const marketPublishRequest = z.strictObject({
+  token: z.string().uuid(),
+  virusTotalKey: z.string().trim().min(1).max(256).optional(),
+  githubToken: z.string().trim().min(1).max(512).optional(),
+});
+
+export const marketOpenPublishLinkRequest = z.strictObject({
+  url: z
+    .string()
+    .max(300)
+    .regex(/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[0-9]+$/),
+});
+
 export const healthPinRequest = z.strictObject({
   presetId: z.string().regex(/^[a-z0-9][a-z0-9-]{2,63}$/).nullable(),
 });
 
 export const shaderCacheScanRequest = z.strictObject({
   refresh: z.boolean().optional(),
+});
+
+export const diagnosticsExportRequestSchema = z.strictObject({
+  reportIds: z.array(z.string().regex(/^[A-Za-z0-9-]{8,64}$/)).max(50),
+  redact: z.boolean(),
+  includeDumps: z.boolean(),
 });
 
 /** Only DirectX has metadata that can prove a cache file is orphaned. */
@@ -299,6 +324,25 @@ export interface TuneSmithApi {
     /** Install a catalog entry after its signature and digest have been verified. */
     install(presetId: string): Promise<InstallResult>;
     setConsent(consent: boolean): Promise<MarketStatus>;
+    /** Whether the main process already has VirusTotal/GitHub credentials from the environment. */
+    publishConfig(): Promise<PublishConfig>;
+    /** Native JSON picker; returns metadata and a single-use token, never a path. */
+    pickPublishPreset(): Promise<PublishCandidate | null>;
+    /** Scan the pending preset, then open a reviewed pull request. */
+    publish(request: {
+      token: string;
+      virusTotalKey?: string;
+      githubToken?: string;
+    }): Promise<PublishResult>;
+    /** Open a validated GitHub pull-request URL in the system browser. */
+    openPublishLink(url: string): Promise<void>;
+  };
+  diagnostics: {
+    /** Local crash reports and minidump inventory; never uploaded. */
+    status(): Promise<DiagnosticsStatus>;
+    /** Ask for a destination, then write the reviewed bundle there. */
+    exportBundle(request: DiagnosticsExportRequest): Promise<DiagnosticsExportResult>;
+    openFolder(): Promise<void>;
   };
   events: {
     onProgress(listener: (progress: EngineProgress) => void): () => void;

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { GameController, type GameAdapter, type ProfilesSource, type SessionStore } from '../src/main/engine/game/controller';
 import type { StoredGameSession } from '../src/main/engine/game/store';
 import { gameProfileSchema } from '../src/shared/game/schema';
+import { POWER_PLANS } from '../src/shared/power';
 import type {
   CpuTopology,
   GameNetworkApplyResult,
@@ -43,6 +44,19 @@ const PROFILE: GameProfile = gameProfileSchema.parse({
 const GAME_PATH = 'C:\\Games\\game.exe';
 const START = '2026-01-01T00:00:00.000Z';
 
+const POWER_PROFILE: GameProfile = gameProfileSchema.parse({
+  schemaVersion: 1,
+  id: 'power-game',
+  name: 'Power Game',
+  version: '1.0.0',
+  description: 'A profile used by the unit tests to exercise session power-plan switching.',
+  authors: [{ handle: 'tester' }],
+  license: 'MIT',
+  risk: 'moderate',
+  trigger: { exe: 'game.exe' },
+  actions: { powerPlan: 'high-performance' },
+});
+
 const NETWORK_PROFILE: GameProfile = gameProfileSchema.parse({
   schemaVersion: 1,
   id: 'network-game',
@@ -61,6 +75,7 @@ class FakeAdapter implements GameAdapter {
   priorities = new Map<number, PriorityClass>();
   suspended = new Set<number>();
   gpu = new Map<string, string | null>();
+  powerGuid = POWER_PLANS.balanced.guid;
   networkTargets: GameNetworkTarget[] = [
     {
       interfaceGuid: '11111111-2222-3333-4444-555555555555',
@@ -105,6 +120,14 @@ class FakeAdapter implements GameAdapter {
   async purgeStandbyList(): Promise<boolean> {
     this.calls.push('purge');
     return true;
+  }
+  async readActivePowerPlan(): Promise<{ guid: string; name: string }> {
+    this.calls.push('read-power');
+    return { guid: this.powerGuid, name: 'Test plan' };
+  }
+  async setActivePowerPlan(guid: string): Promise<void> {
+    this.calls.push(`set-power:${guid}`);
+    this.powerGuid = guid;
   }
   async readGpuPreference(exePath: string): Promise<string | null> {
     this.calls.push(`read-gpu:${exePath}`);
@@ -259,6 +282,25 @@ describe('game controller', () => {
 
     await controller.stopActive();
     expect(adapter.calls.some((call) => call.startsWith('network-restore:'))).toBe(true);
+  });
+
+  it('switches to the profile power plan and restores the previous plan on exit', async () => {
+    const { controller, adapter, sessions } = makeController({ profiles: [POWER_PROFILE] });
+    await controller.setWatching(true);
+
+    controller.handleSnapshot(withBrowser);
+    await controller.settle();
+
+    const target = POWER_PLANS['high-performance'].guid;
+    expect(adapter.powerGuid).toBe(target);
+    expect(adapter.calls).toContain(`set-power:${target}`);
+
+    const saved = sessions.saved.find((session) => session.power !== undefined);
+    expect(saved?.power).toEqual({ previousGuid: POWER_PLANS.balanced.guid, appliedGuid: target });
+
+    await controller.stopActive();
+    expect(adapter.powerGuid).toBe(POWER_PLANS.balanced.guid);
+    expect(adapter.calls).toContain(`set-power:${POWER_PLANS.balanced.guid}`);
   });
 
   it('does not tear down on the first missing tick', async () => {

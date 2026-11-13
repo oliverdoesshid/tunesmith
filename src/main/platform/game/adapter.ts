@@ -16,6 +16,7 @@ import {
   suspendProcesses,
   writeGpuPreference,
 } from './control';
+import { getActiveScheme, setActiveScheme } from '../power';
 import { setEcoMode } from './eco';
 import { startTimerHold } from './timer';
 import { resolvePackage } from './packages';
@@ -40,6 +41,8 @@ export function createSystemGameAdapter(): GameAdapter {
     setEcoMode,
     startTimerHold,
     purgeStandbyList,
+    readActivePowerPlan: getActiveScheme,
+    setActivePowerPlan: setActiveScheme,
     readGpuPreference,
     writeGpuPreference,
     restoreGpuPreference,

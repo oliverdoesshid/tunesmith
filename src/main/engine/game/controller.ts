@@ -25,6 +25,7 @@ import { evaluateGameProfile, isBlocked, watchList, type GameFinding } from '../
 import { cryoFreezeBudget, cryoFreezeNames, cryoFreezeProfile } from '../../../shared/game/cryo';
 import { evaluateGuards, GUARD_DEFAULTS } from '../../../shared/game/telemetry';
 import { adaptGameProfile, describeMachine } from '../../../shared/game/adapt';
+import { POWER_PLANS } from '../../../shared/power';
 import type { HardwareSpec } from '../../../shared/types';
 import type { AppliedAdjustment,
   GamePackageInfo,
@@ -71,6 +72,9 @@ export interface GameAdapter {
   setEcoMode?(pids: readonly number[], enabled: boolean): Promise<ProcessOutcome[]>;
   /** Timer holder is optional for the same reason; absence records a failed adjustment, never a crash. */
   startTimerHold?(): Promise<TimerHoldHandle>;
+  /** Optional active-plan capture/switch; absence records a skipped adjustment. */
+  readActivePowerPlan?(): Promise<{ guid: string; name: string }>;
+  setActivePowerPlan?(guid: string): Promise<void>;
   purgeStandbyList(): Promise<boolean>;
   readGpuPreference(exePath: string): Promise<string | null>;
   writeGpuPreference(exePath: string, preference: 'high-performance' | 'power-saving'): Promise<void>;
@@ -194,7 +198,7 @@ export class GameController {
     this.adapter = deps.adapter;
     this.repo = deps.profiles;
     this.sessions = deps.sessions;
-    this.pollMs = clampPollMs(deps.pollMs ?? 2_000);
+    this.pollMs = clampPollMs(deps.pollMs ?? 10_000);
     this.now = deps.now ?? isoNow;
     this.hardware = deps.hardware ?? null;
     this.clock = deps.nowMs ?? (() => Date.now());
@@ -523,6 +527,7 @@ export class GameController {
     if (adapted.changes.length > 0) await this.sessions.save(session);
 
     await this.applyGpuPreference(session, adapted.actions, process);
+    await this.applyPowerPlan(session, adapted.actions);
     await this.applyNetwork(session, adapted.actions, process);
     await this.applyInterruptAffinity(session, topology);
     await this.applyMemoryFlush(session, adapted.actions);
@@ -682,6 +687,62 @@ export class GameController {
       this.record(session, {
         kind: 'gpu-preference',
         target: exePath,
+        detail: 'Failed',
+        ok: false,
+        error: describeError(error),
+      });
+    }
+    await this.sessions.save(session);
+  }
+
+  private async applyPowerPlan(
+    session: StoredGameSession,
+    actions: GameProfileActions,
+  ): Promise<void> {
+    const planId = actions.powerPlan;
+    if (planId === undefined) return;
+
+    const target = POWER_PLANS[planId];
+    if (this.adapter.readActivePowerPlan === undefined || this.adapter.setActivePowerPlan === undefined) {
+      this.record(session, {
+        kind: 'power-plan',
+        target: target.label,
+        detail: 'Not applied',
+        ok: false,
+        error: 'Power-plan switching is unavailable in this build.',
+      });
+      await this.sessions.save(session);
+      return;
+    }
+
+    try {
+      const previous = await this.adapter.readActivePowerPlan();
+      if (previous.guid.toLowerCase() === target.guid.toLowerCase()) {
+        this.record(session, {
+          kind: 'power-plan',
+          target: target.label,
+          detail: 'Already active',
+          ok: true,
+        });
+        await this.sessions.save(session);
+        return;
+      }
+
+      // Persist the previous plan before switching. Crash recovery can then always
+      // return the machine to the plan the user was actually running.
+      session.power = { previousGuid: previous.guid, appliedGuid: target.guid };
+      await this.sessions.save(session);
+      await this.adapter.setActivePowerPlan(target.guid);
+      this.record(session, {
+        kind: 'power-plan',
+        target: target.label,
+        detail: 'Activated for this session',
+        ok: true,
+      });
+    } catch (error) {
+      this.record(session, {
+        kind: 'power-plan',
+        target: target.label,
         detail: 'Failed',
         ok: false,
         error: describeError(error),
@@ -1169,6 +1230,18 @@ export class GameController {
         await this.adapter.restoreGpuPreference(session.gpu.exePath, session.gpu.previous);
       } catch (error) {
         problems.push(`GPU preference: ${describeError(error)}`);
+      }
+    }
+
+    if (session.power !== undefined) {
+      if (this.adapter.setActivePowerPlan === undefined) {
+        problems.push('power plan: restore is unavailable in this build');
+      } else {
+        try {
+          await this.adapter.setActivePowerPlan(session.power.previousGuid);
+        } catch (error) {
+          problems.push(`power plan: ${describeError(error)}`);
+        }
       }
     }
 

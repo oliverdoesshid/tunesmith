@@ -15,6 +15,8 @@ import { GameOverlayController } from './overlay/controller';
 import { readTelemetry } from './platform/game/telemetry';
 import { initLogging, logger } from './logging';
 import { UpdaterService } from './updater';
+import { startCrashCollector } from './diagnostics/crash-collector';
+import { DiagnosticsService } from './diagnostics/reports';
 import { EVENT_CHANNELS } from '../shared/channels';
 
 const devUrl = process.env.TS_DEV_SERVER_URL ?? null;
@@ -55,7 +57,23 @@ if (!gotLock) {
   app.quit();
 } else {
   logger.info('app', 'single-instance lock acquired');
+  const crashDir = path.join(app.getPath('userData'), 'crashes');
+  const crashCollector = startCrashCollector({
+    crashDir,
+    appVersion: app.getVersion(),
+    electronVersion: process.versions.electron ?? 'unknown',
+    platform: process.platform,
+    arch: process.arch,
+    log: (line) => logger.info('diagnostics', line),
+  });
   const state = createAppState();
+  const diagnostics = new DiagnosticsService({
+    crashDir,
+    logDir: path.join(app.getPath('userData'), 'logs'),
+    getJournal: () => state.journal.summaries(),
+    appVersion: app.getVersion(),
+    electronVersion: process.versions.electron ?? 'unknown',
+  });
   logger.info('app', 'application state created');
 
   app.setAppUserModelId('dev.tunesmith.app');
@@ -206,7 +224,17 @@ if (!gotLock) {
 
       // Registered once, before any window exists: a second registration would throw.
       logger.info('app', 'registering IPC handlers');
-      registerIpcHandlers(state, () => mainWindow, overlay, updater);
+      registerIpcHandlers(state, () => mainWindow, overlay, updater, diagnostics);
+      void diagnostics
+        .materializeReports()
+        .then((count) => {
+          if (count > 0) logger.info('diagnostics', 'correlated local crash reports', { count });
+        })
+        .catch((error: unknown) => {
+          logger.warn('diagnostics', 'could not materialize crash reports', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
       await createWindow();
       updater.start();
 
@@ -270,6 +298,7 @@ if (!gotLock) {
   });
 
   app.on('will-quit', () => {
+    crashCollector.markCleanExit();
     logger.info('app', 'will-quit');
   });
 

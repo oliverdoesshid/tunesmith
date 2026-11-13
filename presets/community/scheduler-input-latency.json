@@ -1,0 +1,112 @@
+{
+  "$schema": "../../schemas/preset.v1.schema.json",
+  "schemaVersion": 1,
+  "signatureVersion": 1,
+  "id": "scheduler-input-latency",
+  "name": "Scheduler & Input Latency",
+  "version": "1.0.0",
+  "description": "Prioritizes games in the Windows multimedia scheduler, gives foreground input a shorter CPU quantum, removes Game DVR capture overhead and keeps PCIe/USB wake paths active. A narrower alternative to the aggressive latency preset: it changes no services, interrupts or network interfaces.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "moderate",
+  "tags": ["gaming", "latency", "input", "scheduler"],
+  "requires": {
+    "os": { "minBuild": 19041 },
+    "elevation": true,
+    "restorePoint": "preferred"
+  },
+  "compatibility": {
+    "ramGb": { "min": 8 }
+  },
+  "profiles": [
+    {
+      "id": "base",
+      "name": "Foreground scheduler response",
+      "description": "MMCSS game priority, foreground quantum, capture removal and low-latency power hints. Suitable for any machine with at least 8 GB of RAM.",
+      "actions": {
+        "registry": [
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "System\\GameConfigStore",
+            "name": "GameDVR_Enabled",
+            "type": "REG_DWORD",
+            "data": 0
+          },
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "SOFTWARE\\Microsoft\\GameBar",
+            "name": "UseNexusForGameBarEnabled",
+            "type": "REG_DWORD",
+            "data": 0
+          },
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+            "name": "SystemResponsiveness",
+            "type": "REG_DWORD",
+            "data": 10
+          },
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+            "name": "NetworkThrottlingIndex",
+            "type": "REG_DWORD",
+            "data": 4294967295
+          },
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+            "name": "GPU Priority",
+            "type": "REG_DWORD",
+            "data": 8
+          },
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+            "name": "Priority",
+            "type": "REG_DWORD",
+            "data": 6
+          },
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+            "name": "Scheduling Category",
+            "type": "REG_SZ",
+            "data": "High"
+          },
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+            "name": "SFIO Priority",
+            "type": "REG_SZ",
+            "data": "High"
+          },
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SYSTEM\\CurrentControlSet\\Control\\PriorityControl",
+            "name": "Win32PrioritySeparation",
+            "type": "REG_DWORD",
+            "data": 38
+          }
+        ],
+        "power": {
+          "plan": "high-performance",
+          "settings": [
+            { "setting": "processor-min-state", "value": 100 },
+            { "setting": "usb-selective-suspend", "value": 0 },
+            { "setting": "pcie-link-state", "value": 0 }
+          ]
+        }
+      }
+    }
+  ]
+}

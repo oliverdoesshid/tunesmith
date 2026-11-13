@@ -7,6 +7,7 @@
  *                       dist/preload/overlay.cjs     (sandbox-compatible)
  *   3. renderer      -> dist/renderer/**             (ESM + assets, both HTML entries)
  *   4. cli           -> dist/cli/index.cjs           (headless companion, CommonJS)
+ *   5. plugin worker -> dist/main/plugin-worker.cjs  (single-use sandbox worker)
  *
  * Source maps are intentionally not emitted for the packaged app: they would ship
  * internal file paths to end users.
@@ -60,6 +61,14 @@ async function buildOverlayPreload() {
   });
 }
 
+async function buildPluginWorker() {
+  await esbuild({
+    ...shared,
+    entryPoints: [path.join(root, 'src/main/plugins/worker.ts')],
+    outfile: path.join(dist, 'main/plugin-worker.cjs'),
+  });
+}
+
 async function buildCli() {
   await esbuild({
     ...shared,
@@ -85,11 +94,13 @@ async function main() {
   await buildMain();
   await buildPreload();
   await buildOverlayPreload();
+  await buildPluginWorker();
   await buildCli();
   await buildRenderer();
 
   for (const rel of [
     'main/index.cjs',
+    'main/plugin-worker.cjs',
     'preload/index.cjs',
     'preload/overlay.cjs',
     'cli/index.cjs',

@@ -51,6 +51,13 @@ export const IPC_CHANNELS = {
   marketStatus: 'market:status',
   marketInstall: 'market:install',
   marketTelemetryConsent: 'market:telemetry-consent',
+  marketPublishConfig: 'market:publish-config',
+  marketPickPublishPreset: 'market:pick-publish-preset',
+  marketPublish: 'market:publish',
+  marketOpenPublishLink: 'market:open-publish-link',
+  diagnosticsStatus: 'diagnostics:status',
+  diagnosticsExport: 'diagnostics:export',
+  diagnosticsOpenFolder: 'diagnostics:open-folder',
 } as const;
 
 export const EVENT_CHANNELS = {

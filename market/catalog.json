@@ -1,0 +1,789 @@
+{
+  "catalog": {
+    "schemaVersion": 1,
+    "generatedAt": "2026-11-13T18:37:27.234Z",
+    "entries": [
+      {
+        "preset": {
+          "$schema": "../../schemas/preset.v1.schema.json",
+          "schemaVersion": 1,
+          "signatureVersion": 1,
+          "id": "competitive-fps-low-latency",
+          "name": "Competitive FPS — Low Latency",
+          "version": "1.0.0",
+          "description": "Removes background game recording, disables mouse acceleration and keeps the CPU, PCIe link and USB devices out of low-power states. Targets high-refresh competitive shooters where frame pacing matters more than idle power.",
+          "authors": [
+            {
+              "handle": "tunesmith-community"
+            }
+          ],
+          "license": "MIT",
+          "risk": "moderate",
+          "tags": [
+            "gaming",
+            "latency",
+            "fps"
+          ],
+          "requires": {
+            "os": {
+              "minBuild": 19041
+            },
+            "elevation": true,
+            "restorePoint": "preferred"
+          },
+          "compatibility": {
+            "ramGb": {
+              "min": 16
+            },
+            "storage": [
+              "SSD"
+            ]
+          },
+          "profiles": [
+            {
+              "id": "base",
+              "name": "Baseline latency tuning",
+              "description": "Applies to any machine with a solid-state system drive and at least 16 GB of RAM.",
+              "actions": {
+                "registry": [
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "System\\GameConfigStore",
+                    "name": "GameDVR_Enabled",
+                    "type": "REG_DWORD",
+                    "data": 0
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "SOFTWARE\\Microsoft\\GameBar",
+                    "name": "UseNexusForGameBarEnabled",
+                    "type": "REG_DWORD",
+                    "data": 0
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "Control Panel\\Mouse",
+                    "name": "MouseSpeed",
+                    "type": "REG_SZ",
+                    "data": "0"
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "Control Panel\\Mouse",
+                    "name": "MouseThreshold1",
+                    "type": "REG_SZ",
+                    "data": "0"
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "Control Panel\\Mouse",
+                    "name": "MouseThreshold2",
+                    "type": "REG_SZ",
+                    "data": "0"
+                  }
+                ],
+                "power": {
+                  "plan": "high-performance",
+                  "settings": [
+                    {
+                      "setting": "processor-min-state",
+                      "value": 100
+                    },
+                    {
+                      "setting": "usb-selective-suspend",
+                      "value": 0
+                    },
+                    {
+                      "setting": "pcie-link-state",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "high-refresh",
+              "name": "High-refresh addendum",
+              "description": "Only applied on machines with at least 8 GB of VRAM and 8 hardware threads.",
+              "when": {
+                "gpuVramGb": {
+                  "min": 8
+                },
+                "cpuThreads": {
+                  "min": 8
+                }
+              },
+              "extends": "base",
+              "actions": {
+                "registry": [
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "System\\GameConfigStore",
+                    "name": "GameDVR_HonorUserFSEBehaviorMode",
+                    "type": "REG_DWORD",
+                    "data": 1
+                  }
+                ],
+                "priorities": [
+                  {
+                    "process": "cs2.exe",
+                    "priority": "High"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "sha256": "e99c439c30479ec08dc8faa9bf79dc6dfe295bd6323193c88f64f932908559b9",
+        "signature": {
+          "keyId": "tunesmith-presets-2026",
+          "sig": "3D547WsejVmQaVVnSdmDV7NZmBefpzF20ekbPkeApmM4pT5vXB0ezexNeMn/J36DINc/Af7uitINU1bk3XKqBQ=="
+        },
+        "ratings": {
+          "up": 0,
+          "down": 0,
+          "crashes": 0,
+          "recoveries": 0
+        },
+        "publishedAt": "2026-11-13T18:37:27.234Z"
+      },
+      {
+        "preset": {
+          "$schema": "../../schemas/preset.v1.schema.json",
+          "schemaVersion": 1,
+          "signatureVersion": 1,
+          "id": "entry-gaming-responsive",
+          "name": "Entry Gaming — Cool & Responsive",
+          "version": "1.0.0",
+          "description": "For 8–16 GB entry-level laptops and desktops: removes Game DVR and Game Bar capture overhead, trims desktop animation delays, gives MMCSS games a larger scheduling share and keeps PCIe/USB wake paths active without pinning every core at 100%. A cooler alternative when maximum-clock presets raise fan noise or drain the battery.",
+          "authors": [
+            {
+              "handle": "tunesmith-community"
+            }
+          ],
+          "license": "MIT",
+          "risk": "conservative",
+          "tags": [
+            "gaming",
+            "low-end",
+            "responsiveness",
+            "thermals"
+          ],
+          "requires": {
+            "os": {
+              "minBuild": 19041
+            },
+            "elevation": true,
+            "restorePoint": "preferred"
+          },
+          "compatibility": {
+            "ramGb": {
+              "min": 8,
+              "max": 16
+            }
+          },
+          "profiles": [
+            {
+              "id": "base",
+              "name": "Low-overhead responsiveness",
+              "description": "Removes capture and shell overhead and keeps clocks out of deep idle, while leaving the balanced plan in place so the machine can still downclock under light load.",
+              "actions": {
+                "registry": [
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "System\\GameConfigStore",
+                    "name": "GameDVR_Enabled",
+                    "type": "REG_DWORD",
+                    "data": 0
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "SOFTWARE\\Microsoft\\GameBar",
+                    "name": "UseNexusForGameBarEnabled",
+                    "type": "REG_DWORD",
+                    "data": 0
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects",
+                    "name": "VisualFXSetting",
+                    "type": "REG_DWORD",
+                    "data": 2
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "Control Panel\\Desktop",
+                    "name": "MenuShowDelay",
+                    "type": "REG_SZ",
+                    "data": "0"
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "Control Panel\\Desktop",
+                    "name": "DragFullWindows",
+                    "type": "REG_SZ",
+                    "data": "0"
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+                    "name": "SystemResponsiveness",
+                    "type": "REG_DWORD",
+                    "data": 10
+                  }
+                ],
+                "power": {
+                  "plan": "balanced",
+                  "settings": [
+                    {
+                      "setting": "processor-min-state",
+                      "value": 10
+                    },
+                    {
+                      "setting": "usb-selective-suspend",
+                      "value": 0
+                    },
+                    {
+                      "setting": "pcie-link-state",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "sha256": "2f0a922e4d28ffda0f433a9f69d12bf751b68b8fe652679e147f3b0686048735",
+        "signature": {
+          "keyId": "tunesmith-presets-2026",
+          "sig": "sGg92acMH6o03RHVdz8tHlfeVF0AbgY3IGxcs0kdf5WYuv7VxFiU8UAzQobyfdbZWDK9BjQ6NYVEqjCcbBsVCA=="
+        },
+        "ratings": {
+          "up": 0,
+          "down": 0,
+          "crashes": 0,
+          "recoveries": 0
+        },
+        "publishedAt": "2026-11-13T18:37:27.234Z"
+      },
+      {
+        "preset": {
+          "$schema": "../../schemas/preset.v1.schema.json",
+          "schemaVersion": 1,
+          "signatureVersion": 1,
+          "id": "hdd-latency-relief",
+          "name": "HDD Latency Relief",
+          "version": "1.0.0",
+          "description": "Conservative tuning for machines still booting from a spinning disk: keeps Superfetch and prefetching enabled, stops the drive from spinning down, and avoids the aggressive caching settings that help SSDs but hurt seek-bound hardware.",
+          "authors": [
+            {
+              "handle": "tunesmith-community"
+            }
+          ],
+          "license": "MIT",
+          "risk": "conservative",
+          "tags": [
+            "storage",
+            "hdd",
+            "stability"
+          ],
+          "requires": {
+            "os": {
+              "minBuild": 19041
+            },
+            "elevation": true,
+            "restorePoint": "preferred"
+          },
+          "compatibility": {
+            "storage": [
+              "HDD"
+            ]
+          },
+          "profiles": [
+            {
+              "id": "base",
+              "name": "Keep the disk warm",
+              "actions": {
+                "services": [
+                  {
+                    "name": "SysMain",
+                    "startup": "Automatic"
+                  }
+                ],
+                "power": {
+                  "plan": "balanced",
+                  "settings": [
+                    {
+                      "setting": "disk-idle-timeout",
+                      "value": 0
+                    },
+                    {
+                      "setting": "processor-min-state",
+                      "value": 5
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "sha256": "32fa112e3136d6f19976d3b94968ddf36e73142e8f76ccae9f90a181027caa3d",
+        "signature": {
+          "keyId": "tunesmith-presets-2026",
+          "sig": "OmfCST8EQ4szS32OByh5UFylcdXtRJV+f8pgUM2nGEhqrcaokN+11DMwly6WIsJ2t4lEqNj7kgwgprWaP5AwBA=="
+        },
+        "ratings": {
+          "up": 0,
+          "down": 0,
+          "crashes": 0,
+          "recoveries": 0
+        },
+        "publishedAt": "2026-11-13T18:37:27.234Z"
+      },
+      {
+        "preset": {
+          "$schema": "../../schemas/preset.v1.schema.json",
+          "schemaVersion": 1,
+          "signatureVersion": 1,
+          "id": "scheduler-input-latency",
+          "name": "Scheduler & Input Latency",
+          "version": "1.0.0",
+          "description": "Prioritizes games in the Windows multimedia scheduler, gives foreground input a shorter CPU quantum, removes Game DVR capture overhead and keeps PCIe/USB wake paths active. A narrower alternative to the aggressive latency preset: it changes no services, interrupts or network interfaces.",
+          "authors": [
+            {
+              "handle": "tunesmith-community"
+            }
+          ],
+          "license": "MIT",
+          "risk": "moderate",
+          "tags": [
+            "gaming",
+            "latency",
+            "input",
+            "scheduler"
+          ],
+          "requires": {
+            "os": {
+              "minBuild": 19041
+            },
+            "elevation": true,
+            "restorePoint": "preferred"
+          },
+          "compatibility": {
+            "ramGb": {
+              "min": 8
+            }
+          },
+          "profiles": [
+            {
+              "id": "base",
+              "name": "Foreground scheduler response",
+              "description": "MMCSS game priority, foreground quantum, capture removal and low-latency power hints. Suitable for any machine with at least 8 GB of RAM.",
+              "actions": {
+                "registry": [
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "System\\GameConfigStore",
+                    "name": "GameDVR_Enabled",
+                    "type": "REG_DWORD",
+                    "data": 0
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "SOFTWARE\\Microsoft\\GameBar",
+                    "name": "UseNexusForGameBarEnabled",
+                    "type": "REG_DWORD",
+                    "data": 0
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+                    "name": "SystemResponsiveness",
+                    "type": "REG_DWORD",
+                    "data": 10
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+                    "name": "NetworkThrottlingIndex",
+                    "type": "REG_DWORD",
+                    "data": 4294967295
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+                    "name": "GPU Priority",
+                    "type": "REG_DWORD",
+                    "data": 8
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+                    "name": "Priority",
+                    "type": "REG_DWORD",
+                    "data": 6
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+                    "name": "Scheduling Category",
+                    "type": "REG_SZ",
+                    "data": "High"
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile\\Tasks\\Games",
+                    "name": "SFIO Priority",
+                    "type": "REG_SZ",
+                    "data": "High"
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SYSTEM\\CurrentControlSet\\Control\\PriorityControl",
+                    "name": "Win32PrioritySeparation",
+                    "type": "REG_DWORD",
+                    "data": 38
+                  }
+                ],
+                "power": {
+                  "plan": "high-performance",
+                  "settings": [
+                    {
+                      "setting": "processor-min-state",
+                      "value": 100
+                    },
+                    {
+                      "setting": "usb-selective-suspend",
+                      "value": 0
+                    },
+                    {
+                      "setting": "pcie-link-state",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "sha256": "8a3a0ae26164a30324784e34c1256ba1fc885d5d7cd4c497273e4c67a9396317",
+        "signature": {
+          "keyId": "tunesmith-presets-2026",
+          "sig": "HGhqL5jz7Z4iJbPXNOlejaWkK78tZFjI1/Nvs/45yF6gb0Ox36QfvldQe1fK5Bqem04MeoSc05N45DiFgVAuCQ=="
+        },
+        "ratings": {
+          "up": 0,
+          "down": 0,
+          "crashes": 0,
+          "recoveries": 0
+        },
+        "publishedAt": "2026-11-13T18:37:27.234Z"
+      },
+      {
+        "preset": {
+          "$schema": "../../schemas/preset.v1.schema.json",
+          "schemaVersion": 1,
+          "signatureVersion": 1,
+          "id": "ultra-low-latency-aggressive",
+          "name": "Ultra-Low Latency (Aggressive)",
+          "version": "1.0.0",
+          "description": "Maximum single-machine responsiveness for competitive online play: MSI-X on the GPU and NICs, per-interface TCP acknowledgement tuning, Game DVR and error reporting silenced, telemetry services stopped, and the CPU held at full clock with parking and link-state savings off. Aggressive by design: it requires elevation and a restore point, and it warns on every machine-specific trade-off.",
+          "authors": [
+            {
+              "handle": "tunesmith-community"
+            }
+          ],
+          "license": "MIT",
+          "risk": "aggressive",
+          "tags": [
+            "gaming",
+            "latency",
+            "fps",
+            "network"
+          ],
+          "requires": {
+            "os": {
+              "minBuild": 19041
+            },
+            "elevation": true,
+            "restorePoint": "required"
+          },
+          "compatibility": {
+            "ramGb": {
+              "min": 16
+            },
+            "storage": [
+              "SSD"
+            ]
+          },
+          "profiles": [
+            {
+              "id": "base",
+              "name": "Aggressive latency baseline",
+              "description": "Interrupt, network, telemetry and power tuning for SSD machines with at least 16 GB of RAM.",
+              "actions": {
+                "registry": [
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "System\\GameConfigStore",
+                    "name": "GameDVR_Enabled",
+                    "type": "REG_DWORD",
+                    "data": 0
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "SOFTWARE\\Microsoft\\GameBar",
+                    "name": "UseNexusForGameBarEnabled",
+                    "type": "REG_DWORD",
+                    "data": 0
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting",
+                    "name": "Disabled",
+                    "type": "REG_DWORD",
+                    "data": 1
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+                    "name": "NetworkThrottlingIndex",
+                    "type": "REG_DWORD",
+                    "data": 4294967295
+                  }
+                ],
+                "services": [
+                  {
+                    "name": "DiagTrack",
+                    "startup": "Disabled",
+                    "stop": true
+                  },
+                  {
+                    "name": "WerSvc",
+                    "startup": "Manual"
+                  }
+                ],
+                "power": {
+                  "plan": "high-performance",
+                  "settings": [
+                    {
+                      "setting": "processor-min-state",
+                      "value": 100
+                    },
+                    {
+                      "setting": "processor-max-state",
+                      "value": 100
+                    },
+                    {
+                      "setting": "core-parking-min-cores",
+                      "value": 100
+                    },
+                    {
+                      "setting": "core-parking-max-cores",
+                      "value": 100
+                    },
+                    {
+                      "setting": "energy-performance-preference",
+                      "value": 0
+                    },
+                    {
+                      "setting": "usb-selective-suspend",
+                      "value": 0
+                    },
+                    {
+                      "setting": "pcie-link-state",
+                      "value": 0
+                    }
+                  ]
+                },
+                "deviceInterrupts": [
+                  {
+                    "deviceClass": "gpu"
+                  },
+                  {
+                    "deviceClass": "network"
+                  }
+                ],
+                "network": [
+                  {
+                    "tcpAckFrequency": 1,
+                    "tcpNoDelay": 1
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "sha256": "a9dc3c50a97aa4d9091055825947a4373c085cacab7f0d20705206d2a62cd0d1",
+        "signature": {
+          "keyId": "tunesmith-presets-2026",
+          "sig": "inEhnT4P1pK1lm6qB8eZ5CdFIy6JbbF9/LAOWjpLuWWo8gSJadXE2sPJJgSbHqPxM+cPDxoGALoO85jBKzlTBg=="
+        },
+        "ratings": {
+          "up": 0,
+          "down": 0,
+          "crashes": 0,
+          "recoveries": 0
+        },
+        "publishedAt": "2026-11-13T18:37:27.234Z"
+      },
+      {
+        "preset": {
+          "$schema": "../../schemas/preset.v1.schema.json",
+          "schemaVersion": 1,
+          "signatureVersion": 1,
+          "id": "workstation-throughput",
+          "name": "Workstation Throughput",
+          "version": "1.0.0",
+          "description": "For 32 GB+ creative and compilation workloads: stops telemetry collection, hands the media scheduler a larger share of the CPU, removes the network throttle that Windows applies to multimedia streams and keeps priority on the foreground application.",
+          "authors": [
+            {
+              "handle": "tunesmith-community"
+            }
+          ],
+          "license": "MIT",
+          "risk": "moderate",
+          "tags": [
+            "workstation",
+            "rendering",
+            "throughput"
+          ],
+          "requires": {
+            "os": {
+              "minBuild": 19041
+            },
+            "elevation": true,
+            "restorePoint": "preferred"
+          },
+          "compatibility": {
+            "ramGb": {
+              "min": 32
+            }
+          },
+          "profiles": [
+            {
+              "id": "base",
+              "name": "Scheduler and telemetry",
+              "actions": {
+                "registry": [
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+                    "name": "SystemResponsiveness",
+                    "type": "REG_DWORD",
+                    "data": 10
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKLM",
+                    "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+                    "name": "NetworkThrottlingIndex",
+                    "type": "REG_DWORD",
+                    "data": 4294967295
+                  },
+                  {
+                    "op": "set",
+                    "hive": "HKCU",
+                    "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects",
+                    "name": "VisualFXSetting",
+                    "type": "REG_DWORD",
+                    "data": 2
+                  }
+                ],
+                "services": [
+                  {
+                    "name": "DiagTrack",
+                    "startup": "Disabled",
+                    "stop": true
+                  },
+                  {
+                    "name": "SysMain",
+                    "startup": "Manual"
+                  }
+                ],
+                "power": {
+                  "plan": "balanced",
+                  "settings": [
+                    {
+                      "setting": "processor-max-state",
+                      "value": 100
+                    },
+                    {
+                      "setting": "core-parking-min-cores",
+                      "value": 100
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "id": "editing-suite",
+              "name": "Editing suite addendum",
+              "description": "Only for machines with at least 12 GB of VRAM, where the timeline and effects pipeline can use it.",
+              "when": {
+                "gpuVramGb": {
+                  "min": 12
+                }
+              },
+              "extends": "base",
+              "actions": {
+                "priorities": [
+                  {
+                    "process": "Adobe Premiere Pro.exe",
+                    "priority": "AboveNormal"
+                  },
+                  {
+                    "process": "blender.exe",
+                    "priority": "AboveNormal"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "sha256": "4da49f98369a95fdadb1b84a53ca72e2d9144c89f43dd70042edbaa3555d535d",
+        "signature": {
+          "keyId": "tunesmith-presets-2026",
+          "sig": "+xteH8XVvTCt34fnmsRXzqcHYsCQzJPwHsMbjguO6jaxGvQKdwl5JEcORsKqxmyA8fRZEDVgLsWv75+dNC/7CA=="
+        },
+        "ratings": {
+          "up": 0,
+          "down": 0,
+          "crashes": 0,
+          "recoveries": 0
+        },
+        "publishedAt": "2026-11-13T18:37:27.234Z"
+      }
+    ]
+  },
+  "signature": {
+    "keyId": "tunesmith-presets-2026",
+    "sig": "1mfhEhwZ4o7Vu134HbKnuQQsM9XaE0FzhaLWhSSy4CUVfDawMHOoCxCwcITwq6DJRVMQDFle5lphBs/bBPIqDQ=="
+  }
+}

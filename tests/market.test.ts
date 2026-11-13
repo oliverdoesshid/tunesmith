@@ -20,10 +20,13 @@ import type { MarketEntry } from '../src/shared/market/types';
 import { loadPresetDirectory } from '../src/shared/preset/loader';
 import type { Preset } from '../src/shared/preset/schema';
 import { fetchVerifiedCatalog, type FetchLike } from '../src/main/market/client';
+import { loadMarketplaceSettings } from '../src/main/market/config';
 import { installVerifiedPreset } from '../src/main/market/install';
 import { MarketplaceService } from '../src/main/market/service';
 import { TelemetryStore } from '../src/main/market/telemetry-store';
 import { sha256Hex } from '../src/main/market/verify';
+import { PRESET_SIGNING_KEY_ID, PRESET_SIGNING_PUBLIC_KEY } from '../src/main/security/keys';
+import { DEFAULT_MARKET_CATALOG_URL } from '../src/shared/market/defaults';
 import { makePreset } from './factories';
 
 const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -86,6 +89,20 @@ describe('canonical JSON', () => {
 });
 
 describe('catalog verification', () => {
+  it('the published Pages catalog verifies against the pinned publisher key', async () => {
+    const body = await readFile(path.resolve('market/catalog.json'), 'utf8');
+    const result = await fetchVerifiedCatalog({
+      url: DEFAULT_MARKET_CATALOG_URL,
+      keyRing: new Map([[PRESET_SIGNING_KEY_ID, PRESET_SIGNING_PUBLIC_KEY]]),
+      fetchImpl: fakeFetch(body),
+    });
+    expect(result.entries.length).toBeGreaterThan(0);
+    expect(result.rejected).toEqual([]);
+    expect(result.entries.map(({ entry }) => entry.preset.id)).toContain(
+      'competitive-fps-low-latency',
+    );
+  });
+
   it('accepts a correctly signed catalog and entry', async () => {
     const entry = makeEntry();
     const result = await fetchVerifiedCatalog({ ...SOURCE, fetchImpl: fakeFetch(envelopeFor([entry])) });
@@ -278,6 +295,25 @@ describe('telemetry', () => {
 });
 
 describe('marketplace service', () => {
+  it('trusts the pinned publisher key for the default catalog', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'ts-market-'));
+    const savedUrl = process.env.TUNESMITH_MARKET_URL;
+    const savedKeys = process.env.TUNESMITH_MARKET_KEYS;
+    delete process.env.TUNESMITH_MARKET_URL;
+    delete process.env.TUNESMITH_MARKET_KEYS;
+    try {
+      const settings = loadMarketplaceSettings('0.0.0', dir, dir);
+      expect(settings.catalogUrl).toBe(DEFAULT_MARKET_CATALOG_URL);
+      expect(settings.keyRing.get(PRESET_SIGNING_KEY_ID)).toBe(PRESET_SIGNING_PUBLIC_KEY);
+    } finally {
+      if (savedUrl === undefined) delete process.env.TUNESMITH_MARKET_URL;
+      else process.env.TUNESMITH_MARKET_URL = savedUrl;
+      if (savedKeys === undefined) delete process.env.TUNESMITH_MARKET_KEYS;
+      else process.env.TUNESMITH_MARKET_KEYS = savedKeys;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('lists verified entries and installs one into the user directory', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'ts-market-'));
     try {

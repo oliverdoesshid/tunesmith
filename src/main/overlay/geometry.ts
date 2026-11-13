@@ -25,7 +25,7 @@ export interface OverlayRect {
 }
 
 export const OSD_WIDTH = 360;
-export const OSD_HEIGHT = 154;
+export const OSD_HEIGHT = 214;
 export const OSD_MARGIN = 18;
 
 /**

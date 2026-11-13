@@ -20,6 +20,7 @@ import type {
 } from '../../shared/market/types';
 import { errorMessage, getBridge } from '../lib/bridge';
 import { Chip, RiskBadge } from './Chrome';
+import { PublishDialog } from './PublishDialog';
 
 export type CatalogLoader = (refresh?: boolean) => Promise<MarketStatus>;
 export type PresetInstaller = (presetId: string) => Promise<InstallResult>;
@@ -175,6 +176,7 @@ export function PresetBrowser({
   const [installedNow, setInstalledNow] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<Notice | null>(null);
   const [consentBusy, setConsentBusy] = useState(false);
+  const [publishOpen, setPublishOpen] = useState(false);
 
   // Keep the latest loader in a ref so an inline prop cannot re-trigger the mount fetch.
   const loaderRef = useRef(loadCatalog);
@@ -274,6 +276,7 @@ export function PresetBrowser({
   const catalogError = error ?? status?.error ?? null;
 
   return (
+    <>
     <section className="panel presets" aria-busy={loading}>
       <div className="panel-head">
         <div>
@@ -292,6 +295,13 @@ export function PresetBrowser({
             aria-label="Search community presets"
             disabled={status === null}
           />
+          <button
+            type="button"
+            className="button button-ghost small"
+            onClick={() => setPublishOpen(true)}
+          >
+            Publish preset
+          </button>
           <button
             type="button"
             className="button button-ghost small"
@@ -415,5 +425,7 @@ export function PresetBrowser({
         </label>
       )}
     </section>
+    {publishOpen && <PublishDialog onClose={() => setPublishOpen(false)} />}
+    </>
   );
 }

@@ -102,8 +102,8 @@ function watchdogView(postApply: PostApplyStatus | null, health: HealthStatus | 
   };
 }
 
-/** Isolated so the five-second memory sample only re-renders this HUD. */
-function useMemoryPressure(): MemorySnapshot | null {
+/** Isolated so the memory sample only re-renders this HUD. */
+function useMemoryPressure(active: boolean): MemorySnapshot | null {
   const [memory, setMemory] = useState<MemorySnapshot | null>(null);
 
   useEffect(() => {
@@ -120,9 +120,11 @@ function useMemoryPressure(): MemorySnapshot | null {
     };
 
     void read();
+    // An active game is worth a fresh reading; an idle HUD is not. The visibility handler
+    // still refreshes immediately when the window returns.
     const timer = window.setInterval(() => {
       if (document.visibilityState !== 'hidden') void read();
-    }, 5_000);
+    }, active ? 5_000 : 15_000);
     const onVisibility = (): void => {
       if (document.visibilityState === 'visible') void read();
     };
@@ -133,7 +135,7 @@ function useMemoryPressure(): MemorySnapshot | null {
       window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, []);
+  }, [active]);
 
   return memory;
 }
@@ -149,8 +151,8 @@ export function DashboardHUD({
   onToggleWatching,
   onStopGame,
 }: DashboardHUDProps): ReactNode {
-  const memory = useMemoryPressure();
   const active = game?.active ?? null;
+  const memory = useMemoryPressure(active !== null);
   const watchdog = watchdogView(postApply, health);
   const affinity = active?.adjustments.find((adjustment) => adjustment.kind === 'affinity');
   const memoryTone = memory === null ? 'muted' : pressureTone(memory.pressure);

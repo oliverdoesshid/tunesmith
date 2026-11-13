@@ -33,6 +33,35 @@
       }
     },
     {
+      "id": "entry-gaming-responsive",
+      "name": "Entry Gaming — Cool & Responsive",
+      "version": "1.0.0",
+      "author": "tunesmith-community",
+      "description": "For 8–16 GB entry-level laptops and desktops: removes Game DVR and Game Bar capture overhead, trims desktop animation delays, gives MMCSS games a larger scheduling share and keeps PCIe/USB wake paths active without pinning every core at 100%. A cooler alternative when maximum-clock presets raise fan noise or drain the battery.",
+      "hardwareSignature": "RAM 8–16 GB",
+      "sha256": "a2bb71747653e3d1c8087f397caf92413e55f0b49386c0a8f76a293b72818eba",
+      "signature": "xr5wkaQNJUcDC1dFMXQOp9r05Z9/fqKR2Zqf6D9aFLHSj6nMDbewBy9gqeJahvROOcUonaGddJyDIcZZc8HoBQ==",
+      "downloadUrl": "https://raw.githubusercontent.com/oliverdoesshid/tunesmith/main/presets/community/entry-gaming-responsive.json",
+      "file": "entry-gaming-responsive.json",
+      "risk": "conservative",
+      "tags": [
+        "gaming",
+        "low-end",
+        "responsiveness",
+        "thermals"
+      ],
+      "license": "MIT",
+      "profileCount": 1,
+      "requirements": {
+        "cpu": [],
+        "gpu": [],
+        "ram": "8–16 GB",
+        "storage": [],
+        "elevation": true,
+        "restorePoint": "preferred"
+      }
+    },
+    {
       "id": "hdd-latency-relief",
       "name": "HDD Latency Relief",
       "version": "1.0.0",
@@ -58,6 +87,35 @@
         "storage": [
           "HDD"
         ],
+        "elevation": true,
+        "restorePoint": "preferred"
+      }
+    },
+    {
+      "id": "scheduler-input-latency",
+      "name": "Scheduler & Input Latency",
+      "version": "1.0.0",
+      "author": "tunesmith-community",
+      "description": "Prioritizes games in the Windows multimedia scheduler, gives foreground input a shorter CPU quantum, removes Game DVR capture overhead and keeps PCIe/USB wake paths active. A narrower alternative to the aggressive latency preset: it changes no services, interrupts or network interfaces.",
+      "hardwareSignature": "RAM ≥ 8 GB",
+      "sha256": "94b1712e198e964a8c54f05595e4a03aad0d98b25fd4de12b769b91f1374437a",
+      "signature": "CBJUbRiPNV0wONjWIArquvL+Gq2QsZGc+fDeLUBTUm4rrK0ASj8pgVy9fzfX/XUJzC6Ngx/CJhlOOqzNyL1oAA==",
+      "downloadUrl": "https://raw.githubusercontent.com/oliverdoesshid/tunesmith/main/presets/community/scheduler-input-latency.json",
+      "file": "scheduler-input-latency.json",
+      "risk": "moderate",
+      "tags": [
+        "gaming",
+        "latency",
+        "input",
+        "scheduler"
+      ],
+      "license": "MIT",
+      "profileCount": 1,
+      "requirements": {
+        "cpu": [],
+        "gpu": [],
+        "ram": "≥ 8 GB",
+        "storage": [],
         "elevation": true,
         "restorePoint": "preferred"
       }

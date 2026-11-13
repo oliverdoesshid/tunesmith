@@ -126,7 +126,7 @@ export async function readSetting(schemeGuid: string, setting: PowerSettingId): 
 }
 
 export async function setActiveScheme(schemeGuid: string): Promise<void> {
-  const result = await runExe('powercfg.exe', ['-setactive', schemeGuid]);
+  const result = await runExe('powercfg.exe', ['-setactive', checkedGuid(schemeGuid, 'power scheme')]);
   if (result.code !== 0) {
     throw new TuneSmithError('apply-failed', 'Could not activate the power scheme', oneLine(result.stderr));
   }

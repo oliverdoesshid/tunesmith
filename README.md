@@ -40,15 +40,45 @@ detected components. It is the contract between that machine and a preset, and
 
 ## Status
 
-**v0.2.1 release preview.** The safety-critical core, signed preset marketplace, game profiles
+**v0.3.0 release preview.** The safety-critical core, signed preset marketplace, game profiles
 and desktop workbench are implemented and tested. This build is intended for supervised testing
 on Windows 10/11 rather than unattended consumer deployment: the installer is unsigned, the
-auto-update feed and installer handoff still need a supervised release pass, there is no settings
-screen, and a stock build ships without a marketplace curator key. System mutations are
+auto-update feed and installer handoff still need a supervised release pass, the Settings dialog
+is the control surface for workspace features, and the default marketplace catalog is signed
+with the same pinned publisher key as the bundled presets. System mutations are
 journaled and reversible, but live apply/rollback and game sessions should be tested on a
 disposable account or VM first.
 
-### What's new in v0.2.1
+### v0.3.0
+
+- Settings can enable or disable every workspace feature independently, along with the game
+  watcher, Cryo-Freeze, IRQ pinning and performance OSD. Preferences are saved locally.
+- Two new signed presets: **Scheduler & Input Latency** tunes MMCSS game priority, the
+  foreground CPU quantum, capture overhead and low-latency power hints without touching
+  services or interrupts; **Entry Gaming — Cool & Responsive** targets 8–16 GB machines with
+  capture, shell-animation and power tuning that avoids pinning every core at 100%.
+- Game profiles can switch to the High performance (or another named) Windows power plan for
+  the session and restore the prior plan on exit or crash recovery. Bundled **Fortnite** and
+  **Apex Legends** profiles use performance-core affinity, High priority, GPU preference and
+  this session power-plan switch.
+- Community extension scripts run in a single-use worker and VM sandbox with a frozen,
+  read-only registry/service snapshot, Zod-validated messages, a 500 ms CPU window and a 64 MB
+  heap cap. Extensions are advisors: they cannot mutate the machine or reach Node globals.
+- The marketplace can submit a preset for review from the app. The preset is schema and
+  policy checked, scanned at VirusTotal, and only a clean result opens a GitHub pull request;
+  a maintainer still signs and merges it before it becomes installable.
+- The performance OSD renders a rolling frame-time graph through a fixed `Float32Array` ring
+  buffer and a Canvas 2D renderer. The React wrapper handles DPI changes, resizing and hover
+  scrubbing without putting the 100 Hz sample stream through React state.
+- Crash diagnostics stay local. Crashpad writes minidumps under the app's own userData folder
+  with upload disabled; a reviewed Settings drawer correlates them with the durable journal and
+  log tail, redacts identity text by default and exports a ZIP. Minidumps are opt-in and are
+  never uploaded by TuneSmith.
+- Marketplace submissions validate a preset, scan it at VirusTotal, and open a reviewed GitHub
+  pull request only when the scan is clean. A maintainer still signs and merges it before it
+  becomes installable.
+
+### v0.2.1
 
 - Fixed the blank packaged window caused by production tree-shaking removing React scheduler
   side effects. The built renderer now mounts the workbench in both Chromium and Electron.
@@ -121,9 +151,17 @@ The public marketplace is
 `market/` is a standalone, dependency-free Steam-dark storefront for GitHub Pages.
 `npm run market:index` rebuilds `market/index.json` from `presets/community/`, validates every
 preset against the schema, verifies its SHA-256 and pinned Ed25519 `.sig`, and emits raw GitHub
-download URLs. The publish workflow typechecks, regenerates the catalog, fails when the committed
-index is stale, and deploys the folder under `/market/`. The static index is a discovery and
-one-click install surface; the in-app signed `catalog.json` channel remains separate.
+download URLs. `npm run market:catalog -- --key tmp/preset-signing-key.pem` builds the in-app
+`catalog.json` envelope from the same presets with that pinned key. The publish workflow
+typechecks, regenerates the index, verifies both artifacts, fails when either is stale, and
+deploys the folder under `/market/`.
+
+The marketplace panel also has **Publish preset**: it validates a local preset, refuses
+policy-blocked or duplicate ids, scans the exact bytes at VirusTotal, blocks malicious or
+suspicious results, and only then opens a GitHub pull request. The PR is a submission, not a
+live publish — a maintainer reviews, signs and regenerates the catalog before merging. Set
+`VIRUSTOTAL_API_KEY` and `TUNESMITH_GITHUB_TOKEN` (Contents + Pull requests write), or enter
+the keys for one submission in the dialog. See `docs/MARKETPLACE.md` §2.
 
 ### Release tags and auto-update
 
@@ -145,12 +183,14 @@ configured. Packaged builds read the GitHub provider from the generated `app-upd
 | `npm run build` | Production bundles: `dist/main/index.cjs`, `dist/preload/index.cjs`, `dist/preload/overlay.cjs`, `dist/cli/index.cjs`, `dist/renderer/**` |
 | `npm run cli -- <cmd>` | Headless CLI: `presets`, `apply --preset <id> [--dry-run]`, `sessions`, `rollback`, `restore`. See `docs/CLI.md` |
 | `npm run typecheck` | `tsc --noEmit`, strict |
-| `npm test` | 427 unit tests (signature, schema, policy, matcher, compiler, loader, executor, detection, game engine, game network, Cryo-Freeze, IRQ-affinity planning and staging, shader-cache inventory and orphan pruning, auto-update lifecycle, post-apply watchdog, EPP/core parking, service dependencies, library discovery, manual launcher entries, launcher/Steam artwork, static market index, performance OSD, health watchdog, elevation handoff) |
+| `npm test` | 460 unit tests (signature, schema, policy, matcher, compiler, loader, executor, detection, game engine, game network, Cryo-Freeze, IRQ-affinity planning and staging, shader-cache inventory and orphan pruning, auto-update lifecycle, post-apply watchdog, EPP/core parking, service dependencies, library discovery, manual launcher entries, launcher/Steam artwork, static market index, marketplace submission scanning, performance OSD, health watchdog, elevation handoff) |
 | `npm run detect` | Run real hardware detection in a terminal, outside Electron |
 | `node scripts/topology.mjs` | Print the CPU topology that affinity planning uses |
 | `npm run presets:hash` | Regenerate `presets/community/index.json` digests |
 | `npm run market:index` | Rebuild `market/index.json`; validates presets, SHA-256 and Ed25519 signatures |
 | `npm run market:check` | Fail if `market/index.json` is stale |
+| `npm run market:catalog -- --key <pem>` | Rebuild the signed in-app `market/catalog.json` |
+| `npm run market:catalog:check` | Verify the signed catalog against the presets and pinned key |
 | `npm run build:win` | Package the built app with electron-builder into `dist/TuneSmith-Setup-<version>.exe` |
 | `npm run package` | `npm run build` + `npm run build:win` (unsigned NSIS installer) |
 
@@ -362,11 +402,11 @@ services (Defender, firewall, update, audio, RPC, Event Log, SCM/WMI).
   `DependOnService` / `DependOnGroup`, follows the nearest six levels and caps the tree at 160
   nodes; service groups are not expanded. The map is advisory, so a missing or stale registry
   declaration does not replace policy or apply-time capture.
-- **The marketplace ships without a pinned catalog key.** The client defaults to the
-  project's GitHub Pages catalog and can be pointed elsewhere with `TUNESMITH_MARKET_URL`
-  or `market/config.json`. No curator key is bundled, so a stock build reports a
-  verification/configuration error instead of listing unverified entries. Verification,
-  install (SHA-256 plus Ed25519) and the telemetry queue are implemented and tested.
+- **The default marketplace catalog uses the preset publisher key.** The client fetches the
+  GitHub Pages `catalog.json` and trusts the pinned key already compiled in for bundled
+  presets. Rebuilding that catalog needs the offline private key. Pointing
+  `TUNESMITH_MARKET_URL` or `market/config.json` at another catalog requires an explicit
+  `TUNESMITH_MARKET_KEYS` / `keys` ring, which replaces the default rather than adding to it.
 - **Efficiency Mode needs Windows 11 and is untested live.** The `eco-mode` switch-on and
   switch-off paths are unit-tested, but no real game session has toggled them yet.
 - **Requirement-8 mutations are unit-tested, not run live.** MSI-X enablement, IRQ priority,
@@ -375,9 +415,10 @@ services (Defender, firewall, update, audio, RPC, Event Log, SCM/WMI).
   during development — only read-only probes (`Get-PnpDevice`, `reg query`) verified the
   key shapes. BCD/HPET edits and Defender tampering are refused by design, not by policy.
   See `docs/PRESET-AUTHORING.md` §8.
-- **Game detection polls every 2 s** rather than hooking process creation, so a game is
-  matched up to one interval after it takes focus. This is deliberate: injection into a game
-  process is anti-cheat territory and buys nothing here.
+- **Game detection polls every 10 s** rather than hooking process creation. A foreground
+  change triggers an immediate scan, so taking focus still matches right away; the interval
+  only catches a game that disappears without a focus change. This is deliberate: injection
+  into a game process is anti-cheat territory and buys nothing here.
 - **Multi-group affinity is implemented but only unit-tested.** Plans are split into
   per-group masks and applied with `SetThreadGroupAffinity`, so 128- and 256-thread
   machines no longer refuse outright; the first session on such a machine is still a
@@ -386,9 +427,13 @@ services (Defender, firewall, update, audio, RPC, Event Log, SCM/WMI).
   and usually makes load times worse.
 - **Preset provenance has two layers.** Bundled presets are covered by `index.json` SHA-256
   digests and detached Ed25519 signatures verified against the pinned key. Marketplace catalogs
-  and entries carry their own Ed25519 signatures and are refused without a configured key ring.
-  A stock build has no curator key, so the marketplace stays closed. See
-  `docs/SECURITY-MODEL.md` §4.
+  and entries carry their own Ed25519 signatures; a stock build verifies the default catalog
+  with that same pinned key. See `docs/SECURITY-MODEL.md` §4.
+- **Marketplace submissions stop at a pull request.** A submission is schema/policy checked,
+  scanned at VirusTotal, and refused on any malicious or suspicious result before GitHub is
+  written. The PR still needs a maintainer to sign the preset and regenerate the market
+  artifacts. The VirusTotal/GitHub calls are covered by fakes; no live submission was made
+  from this workstation.
 - **Process priority is volatile.** It applies until the target process restarts; the UI labels
   it as non-persistent.
 - **The mutation paths have not been executed against a live host during development.** Only
@@ -408,15 +453,16 @@ services (Defender, firewall, update, audio, RPC, Event Log, SCM/WMI).
 - **Outbound traffic is limited to explicit paths.** The default Steam artwork resolver probes and
   loads images from `cdn.akamai.steamstatic.com` using only a numeric App ID; the optional
   SteamGridDB batch lookup, refresh of the configured signed marketplace catalog, telemetry only
-  after the user opts in, and the packaged GitHub Releases update check/download are the others.
-  Preset application itself never fetches data.
+  after the user opts in, the packaged GitHub Releases update check/download, and an explicitly
+  initiated marketplace submission to VirusTotal and GitHub are the others. Preset application
+  itself never fetches data.
 
 ## Verification
 
 The repository is checked with:
 
 - `npm run typecheck` — clean.
-- `npm test` — 427/427 passing across 44 files.
+- `npm test` — 460/460 passing across 49 files.
 - `npm run build` — main, preload, overlay-preload and CLI bundles emitted, both HTML entry
   points present, artifact sizes asserted.
 - `npm run detect -- --json` — real detection on a supported Windows host: generates that
@@ -435,7 +481,7 @@ anything.
 
 ## Next steps
 
-A curator-signed default marketplace catalog and key-rotation plan, a settings screen,
+A publisher-key rotation plan,
 Windows code signing for the installer and update payload, dry-run reads of current values in
 the preview, and an ETW-based before/after measurement so a preset's claim can be checked
 rather than trusted.

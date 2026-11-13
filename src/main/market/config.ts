@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_MARKET_CATALOG_URL } from '../../shared/market/defaults';
+import { PRESET_SIGNING_KEY_ID, PRESET_SIGNING_PUBLIC_KEY } from '../security/keys';
 import { loadTrustedKeys } from './verify';
 
 export interface MarketplaceSettings {
@@ -75,6 +76,14 @@ export function loadMarketplaceSettings(
   let keyRing = loadTrustedKeys(env.TUNESMITH_MARKET_KEYS);
   if (keyRing.size === 0 && file.keys !== undefined) {
     keyRing = loadTrustedKeys(JSON.stringify(file.keys));
+  }
+  // The public Pages catalog is signed by the same offline publisher key that signs the
+  // bundled presets. That key is already compiled in, so trusting it here adds no new
+  // trust root; an explicit environment/config key ring still replaces it wholesale.
+  if (keyRing.size === 0) {
+    keyRing = loadTrustedKeys(
+      JSON.stringify({ [PRESET_SIGNING_KEY_ID]: PRESET_SIGNING_PUBLIC_KEY }),
+    );
   }
 
   const stateDir = path.join(userData, 'market');

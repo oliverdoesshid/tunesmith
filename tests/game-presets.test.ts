@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import cyberpunk from '../presets/games/cyberpunk-2077.json';
 import esports from '../presets/games/esports-low-latency.json';
+import fortnite from '../presets/games/fortnite-performance.json';
+import apex from '../presets/games/apex-legends-performance.json';
 import eco from '../presets/games/efficiency-eco.json';
 import siege from '../presets/games/rainbow-six-siege.json';
 import streaming from '../presets/games/tiktok-live-studio-streaming.json';
@@ -9,7 +11,7 @@ import { evaluateGameProfile, isBlocked, watchList } from '../src/shared/game/po
 import { gameProfileSchema } from '../src/shared/game/schema';
 import type { CpuTopology } from '../src/shared/game/types';
 
-const BUNDLED: unknown[] = [cyberpunk, esports, eco, siege, streaming];
+const BUNDLED: unknown[] = [cyberpunk, esports, fortnite, apex, eco, siege, streaming];
 
 /** A plain 8-thread machine: nothing may depend on hybrid cores to stay safe. */
 const TOPOLOGY: CpuTopology = {

@@ -22,6 +22,7 @@ import { SessionLock } from './engine/lock';
 import { PresetRepository } from './engine/preset-repository';
 import { loadMarketplaceSettings } from './market/config';
 import { MarketplaceService } from './market/service';
+import { MarketPublisher } from './market/publish';
 import { detectHardware } from './platform/hardware';
 import { createRestorePoint } from './platform/restore-point';
 import { HealthStore } from './health/store';
@@ -86,6 +87,10 @@ export function createAppState(): AppStateShape {
     getSpec,
   });
 
+  const marketPublisher = new MarketPublisher({
+    log: (line) => console.log(`[market-publish] ${line}`),
+  });
+
   const shaderCache = new ShaderCacheService({
     log: (line) => console.log(`[shader-cache] ${line}`),
   });
@@ -143,7 +148,9 @@ export function createAppState(): AppStateShape {
       const scan = await libraries.scan();
       return scan.games.flatMap((entry) => entry.executables.map((executable) => executable.name));
     },
-    pollMs: 2_000,
+    // Focus changes trigger an immediate scan; the interval only covers a game that
+    // disappears without a foreground event. Ten seconds keeps that heartbeat cheap.
+    pollMs: 10_000,
     log: (line) => console.log(`[game] ${line}`),
   });
 
@@ -195,6 +202,7 @@ export function createAppState(): AppStateShape {
     health,
     shaderCache,
     market,
+    marketPublisher,
     presetsDir,
     gameProfilesDir,
     sessionsDir,

@@ -39,6 +39,8 @@ import { initialUpdaterStatus } from '../../shared/updater';
 
 import cyberpunkGame from '../../../presets/games/cyberpunk-2077.json';
 import esportsGame from '../../../presets/games/esports-low-latency.json';
+import fortniteGame from '../../../presets/games/fortnite-performance.json';
+import apexGame from '../../../presets/games/apex-legends-performance.json';
 import ecoGame from '../../../presets/games/efficiency-eco.json';
 import siegeGame from '../../../presets/games/rainbow-six-siege.json';
 import streamingGame from '../../../presets/games/tiktok-live-studio-streaming.json';
@@ -46,6 +48,8 @@ import competitiveFps from '../../../presets/community/competitive-fps-low-laten
 import ultraLowLatency from '../../../presets/community/ultra-low-latency-aggressive.json';
 import workstation from '../../../presets/community/workstation-throughput.json';
 import hddRelief from '../../../presets/community/hdd-latency-relief.json';
+import entryGaming from '../../../presets/community/entry-gaming-responsive.json';
+import schedulerLatency from '../../../presets/community/scheduler-input-latency.json';
 
 const MOCK_SPEC: HardwareSpec = {
   schemaVersion: 1,
@@ -110,7 +114,7 @@ const MOCK_SERVICE_REGISTRY: ServiceRegistryEntry[] = [
 ];
 
 function loadPresets(): Preset[] {
-  const raw: unknown[] = [competitiveFps, workstation, hddRelief, ultraLowLatency];
+  const raw: unknown[] = [competitiveFps, workstation, hddRelief, ultraLowLatency, entryGaming, schedulerLatency];
   const out: Preset[] = [];
   for (const candidate of raw) {
     const parsed = presetSchema.safeParse(candidate);
@@ -149,7 +153,15 @@ function summarize(preset: Preset, spec: HardwareSpec): PresetSummary {
 }
 
 function loadGameProfiles(): GameProfile[] {
-  const parsed = [cyberpunkGame, esportsGame, ecoGame, siegeGame, streamingGame].flatMap((candidate) => {
+  const parsed = [
+    cyberpunkGame,
+    esportsGame,
+    fortniteGame,
+    apexGame,
+    ecoGame,
+    siegeGame,
+    streamingGame,
+  ].flatMap((candidate) => {
     const result = gameProfileSchema.safeParse(candidate);
     return result.success ? [result.data] : [];
   });
@@ -366,7 +378,7 @@ export function createMockBridge(): TuneSmithApi {
     telemetry: null,
     guard: null,
     profiles: gameProfiles.length,
-    pollMs: 2000,
+    pollMs: 10_000,
   };
 
   const setGameStatus = (next: GameStatus): GameStatus => {
@@ -586,6 +598,20 @@ export function createMockBridge(): TuneSmithApi {
       setConsent: async (consent: boolean) => {
         marketStatus = { ...marketStatus, telemetry: { ...marketStatus.telemetry, consent } };
         return marketStatus;
+      },
+      publishConfig: async () => ({
+        repository: 'oliverdoesshid/tunesmith',
+        branch: 'main',
+        virusTotalConfigured: false,
+        githubConfigured: false,
+        hint: 'Publishing needs VirusTotal and GitHub credentials and is unavailable in the browser preview.',
+      }),
+      pickPublishPreset: async () => null,
+      publish: async () => {
+        throw new Error('Publishing is unavailable in the browser preview.');
+      },
+      openPublishLink: async () => {
+        throw new Error('Opening a pull request is unavailable in the browser preview.');
       },
     },
 
@@ -835,6 +861,35 @@ export function createMockBridge(): TuneSmithApi {
           gameListeners.delete(listener);
         };
       },
+    },
+
+    diagnostics: {
+      status: async () => ({
+        crashDir: 'C:\\Users\\preview\\AppData\\Roaming\\TuneSmith\\crashes',
+        reportCount: 1,
+        dumpCount: 0,
+        totalDumpBytes: 0,
+        reports: [
+          {
+            id: 'preview-crash-0001',
+            at: new Date(Date.now() - 86_400_000).toISOString(),
+            kind: 'renderer',
+            title: 'Renderer process crash · preview',
+            summary: 'Preview report assembled from a fixture log.',
+            dumpFiles: [],
+            reportBytes: 128,
+          },
+        ],
+        message: null,
+      }),
+      exportBundle: async () => ({
+        saved: false,
+        path: null,
+        fileCount: 0,
+        bytes: 0,
+        message: 'Browser preview: diagnostics are exported only in the desktop app.',
+      }),
+      openFolder: async () => undefined,
     },
 
     events: {

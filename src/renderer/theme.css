@@ -602,6 +602,80 @@ a {
 }
 
 /* ---------------------------------------------------------------- *
+ * Settings dialog
+ * ---------------------------------------------------------------- */
+
+.settings-trigger {
+  appearance: none;
+  text-align: left;
+}
+
+.settings-dialog {
+  width: min(760px, 100%);
+}
+
+.settings-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-section-head .section-title {
+  margin-bottom: 2px;
+}
+
+.settings-all-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.settings-options {
+  margin-top: 8px;
+  padding: 0;
+}
+
+.settings-options .workspace-option:last-child {
+  border-bottom: 0;
+}
+
+.settings-option.is-disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.settings-option.is-disabled:hover {
+  background: transparent;
+}
+
+.settings-option.is-disabled .workspace-check {
+  border-style: dashed;
+}
+
+.settings-runtime {
+  margin-top: 10px;
+  border-top: 1px solid var(--rule);
+}
+
+.settings-note {
+  margin-top: 12px;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.settings-foot {
+  gap: 16px;
+}
+
+.settings-foot > span {
+  flex: 1;
+}
+
+/* ---------------------------------------------------------------- *
  * Layout
  * ---------------------------------------------------------------- */
 
@@ -3329,6 +3403,19 @@ input[type='checkbox'] {
 
   .workspace-menu {
     margin-left: auto;
+  }
+
+  .settings-trigger {
+    margin-left: auto;
+  }
+
+  .settings-section-head {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .settings-all-actions {
+    justify-content: flex-start;
   }
 
   .hud-topline {

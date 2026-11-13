@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "fortnite-performance",
+  "name": "Fortnite — Performance",
+  "version": "1.0.0",
+  "description": "Frame-time profile for Fortnite: performance cores, High priority, the high-performance GPU, the 0.5 ms timer and the High performance power plan while the match runs. Browsers drop to Idle and Discord stays available at BelowNormal, so voice chat is not interrupted.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "moderate",
+  "trigger": { "exe": "FortniteClient-Win64-Shipping.exe" },
+  "actions": {
+    "affinity": { "strategy": "performance-cores" },
+    "priority": "High",
+    "gpuPreference": "high-performance",
+    "timerHold": true,
+    "powerPlan": "high-performance",
+    "backgroundRules": [
+      { "process": "chrome.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "msedge.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "firefox.exe", "action": "lower-priority", "priority": "Idle" },
+      { "process": "Discord.exe", "action": "lower-priority", "priority": "BelowNormal" }
+    ]
+  },
+  "guards": {
+    "maxCpuTempC": 90,
+    "maxGpuTempC": 87,
+    "onBattery": "restore",
+    "cooldownSeconds": 180
+  },
+  "notes": [
+    "The High performance power plan is switched on only while the game session runs and the previous plan is restored on exit or crash recovery.",
+    "Discord is lowered but not suspended, so voice chat keeps working; browsers are only deprioritised, not frozen.",
+    "On a CPU without efficiency cores the affinity plan falls back to every logical processor; the rest of the profile still applies.",
+    "Server traffic in Fortnite is UDP, so no TCP acknowledgement tuning is applied; timer and scheduler settings still reduce local input latency.",
+    "Thermal guard: above 90°C CPU or 87°C GPU the profile releases and waits 3 minutes before re-applying."
+  ]
+}

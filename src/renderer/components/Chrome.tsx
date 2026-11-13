@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { RiskLevel } from '../../shared/types';
 import type { SessionStatus } from '../../shared/session';
-import { FEATURE_DEFINITIONS, type FeatureKey, type FeatureVisibility } from '../lib/features';
+import { FEATURE_DEFINITIONS, type FeatureVisibility } from '../lib/features';
 import { riskLabel, statusLabel } from '../lib/format';
 
 export function RiskBadge({ risk }: { risk: RiskLevel }): ReactNode {
@@ -30,8 +30,7 @@ interface HeaderProps {
   isMock: boolean;
   busy: boolean;
   features: FeatureVisibility;
-  onToggleFeature: (key: FeatureKey) => void;
-  onShowAllFeatures: () => void;
+  onOpenSettings: () => void;
   onRefresh: () => void;
 }
 
@@ -41,8 +40,7 @@ export function Header({
   isMock,
   busy,
   features,
-  onToggleFeature,
-  onShowAllFeatures,
+  onOpenSettings,
   onRefresh,
 }: HeaderProps): ReactNode {
   const visible = FEATURE_DEFINITIONS.filter((feature) => features[feature.key]).length;
@@ -77,57 +75,22 @@ export function Header({
           {busy ? 'SYNCING…' : 'REFRESH'}
         </button>
 
-        <details className="workspace-menu">
-          <summary className="workspace-trigger" aria-label="Choose visible workspace modules">
-            <span className="workspace-trigger-glyph" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-              <i />
-            </span>
-            <span>Workspace</span>
-            <b>{hidden === 0 ? `${visible} ON` : `${hidden} OFF`}</b>
-          </summary>
-
-          <div className="workspace-popover">
-            <div className="workspace-head">
-              <span>MODULE VISIBILITY</span>
-              <code>
-                {visible}/{FEATURE_DEFINITIONS.length}
-              </code>
-            </div>
-
-            <div className="workspace-options">
-              {FEATURE_DEFINITIONS.map((feature) => (
-                <label key={feature.key} className={`workspace-option ${features[feature.key] ? 'is-on' : ''}`}>
-                  <input
-                    type="checkbox"
-                    checked={features[feature.key]}
-                    onChange={() => onToggleFeature(feature.key)}
-                  />
-                  <span className="workspace-check" aria-hidden="true" />
-                  <span className="workspace-code">{feature.code}</span>
-                  <span className="workspace-option-copy">
-                    <strong>{feature.label}</strong>
-                    <small>{feature.description}</small>
-                  </span>
-                </label>
-              ))}
-            </div>
-
-            <div className="workspace-foot">
-              <span>Saved on this machine</span>
-              <button
-                type="button"
-                className="button button-ghost small"
-                onClick={onShowAllFeatures}
-                disabled={hidden === 0}
-              >
-                Show all
-              </button>
-            </div>
-          </div>
-        </details>
+        <button
+          type="button"
+          className="workspace-trigger settings-trigger"
+          aria-label="Open settings"
+          aria-haspopup="dialog"
+          onClick={onOpenSettings}
+        >
+          <span className="workspace-trigger-glyph" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+            <i />
+          </span>
+          <span>Settings</span>
+          <b>{hidden === 0 ? `${visible} ON` : `${hidden} OFF`}</b>
+        </button>
       </div>
     </header>
   );

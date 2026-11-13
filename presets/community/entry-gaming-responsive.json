@@ -1,0 +1,88 @@
+{
+  "$schema": "../../schemas/preset.v1.schema.json",
+  "schemaVersion": 1,
+  "signatureVersion": 1,
+  "id": "entry-gaming-responsive",
+  "name": "Entry Gaming — Cool & Responsive",
+  "version": "1.0.0",
+  "description": "For 8–16 GB entry-level laptops and desktops: removes Game DVR and Game Bar capture overhead, trims desktop animation delays, gives MMCSS games a larger scheduling share and keeps PCIe/USB wake paths active without pinning every core at 100%. A cooler alternative when maximum-clock presets raise fan noise or drain the battery.",
+  "authors": [{ "handle": "tunesmith-community" }],
+  "license": "MIT",
+  "risk": "conservative",
+  "tags": ["gaming", "low-end", "responsiveness", "thermals"],
+  "requires": {
+    "os": { "minBuild": 19041 },
+    "elevation": true,
+    "restorePoint": "preferred"
+  },
+  "compatibility": {
+    "ramGb": { "min": 8, "max": 16 }
+  },
+  "profiles": [
+    {
+      "id": "base",
+      "name": "Low-overhead responsiveness",
+      "description": "Removes capture and shell overhead and keeps clocks out of deep idle, while leaving the balanced plan in place so the machine can still downclock under light load.",
+      "actions": {
+        "registry": [
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "System\\GameConfigStore",
+            "name": "GameDVR_Enabled",
+            "type": "REG_DWORD",
+            "data": 0
+          },
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "SOFTWARE\\Microsoft\\GameBar",
+            "name": "UseNexusForGameBarEnabled",
+            "type": "REG_DWORD",
+            "data": 0
+          },
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects",
+            "name": "VisualFXSetting",
+            "type": "REG_DWORD",
+            "data": 2
+          },
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "Control Panel\\Desktop",
+            "name": "MenuShowDelay",
+            "type": "REG_SZ",
+            "data": "0"
+          },
+          {
+            "op": "set",
+            "hive": "HKCU",
+            "path": "Control Panel\\Desktop",
+            "name": "DragFullWindows",
+            "type": "REG_SZ",
+            "data": "0"
+          },
+          {
+            "op": "set",
+            "hive": "HKLM",
+            "path": "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia\\SystemProfile",
+            "name": "SystemResponsiveness",
+            "type": "REG_DWORD",
+            "data": 10
+          }
+        ],
+        "power": {
+          "plan": "balanced",
+          "settings": [
+            { "setting": "processor-min-state", "value": 10 },
+            { "setting": "usb-selective-suspend", "value": 0 },
+            { "setting": "pcie-link-state", "value": 0 }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -38,10 +38,12 @@ import type {
   PickedGamePath,
 } from '../shared/game/types';
 import type { InstallResult, MarketStatus } from '../shared/market/types';
+import type { PublishCandidate, PublishConfig, PublishResult } from '../shared/market/publish';
 import type { HealthFlushResult, HealthStatus } from '../shared/health/types';
 import type { ShaderCachePruneResult, ShaderCacheStatus } from '../shared/shader-cache';
 import type { PostApplyStatus } from '../shared/post-apply';
 import type { UpdaterStatus } from '../shared/updater';
+import type { DiagnosticsExportResult, DiagnosticsStatus } from '../shared/diagnostics/types';
 
 async function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
   const response = (await ipcRenderer.invoke(channel, ...args)) as IpcEnvelope<T> | undefined;
@@ -167,6 +169,16 @@ const api: TuneSmithApi = {
     status: (refresh = false) => invoke<MarketStatus>(IPC_CHANNELS.marketStatus, { refresh }),
     install: (presetId: string) => invoke<InstallResult>(IPC_CHANNELS.marketInstall, { presetId }),
     setConsent: (consent: boolean) => invoke<MarketStatus>(IPC_CHANNELS.marketTelemetryConsent, { consent }),
+    publishConfig: () => invoke<PublishConfig>(IPC_CHANNELS.marketPublishConfig),
+    pickPublishPreset: () => invoke<PublishCandidate | null>(IPC_CHANNELS.marketPickPublishPreset),
+    publish: (request) => invoke<PublishResult>(IPC_CHANNELS.marketPublish, request),
+    openPublishLink: (url: string) => invoke<void>(IPC_CHANNELS.marketOpenPublishLink, { url }),
+  },
+
+  diagnostics: {
+    status: () => invoke<DiagnosticsStatus>(IPC_CHANNELS.diagnosticsStatus),
+    exportBundle: (request) => invoke<DiagnosticsExportResult>(IPC_CHANNELS.diagnosticsExport, request),
+    openFolder: () => invoke<void>(IPC_CHANNELS.diagnosticsOpenFolder),
   },
 
   events: {

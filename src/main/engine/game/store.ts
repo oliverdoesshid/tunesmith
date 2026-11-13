@@ -58,6 +58,8 @@ export interface StoredGameSession {
   gpu?: { exePath: string; previous: string | null };
   /** True while the 0.5 ms timer holder is (or should be) running for this session. */
   timerHeld?: boolean;
+  /** Prior active power plan when this session switched plans; restored on exit. */
+  power?: { previousGuid: string; appliedGuid: string };
   /** Prior TCP/adapter values for the game's server interface(s), captured before writing. */
   network?: GameNetworkSnapshot;
   /** Prior per-device interrupt-affinity registry values, captured before staging. */

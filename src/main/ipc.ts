@@ -8,6 +8,7 @@
  *     the bridge
  */
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import { stat } from 'node:fs/promises';
 import { freemem, totalmem } from 'node:os';
 import {
@@ -18,6 +19,7 @@ import {
   type BrowserWindow,
   type IpcMainInvokeEvent,
   type OpenDialogOptions,
+  type SaveDialogOptions,
 } from 'electron';
 import { describeError, isTuneSmithError, TuneSmithError } from '../shared/errors';
 import {
@@ -37,7 +39,10 @@ import {
   healthPinRequest,
   IPC_CHANNELS,
   marketInstallRequest,
+  marketOpenPublishLinkRequest,
+  marketPublishRequest,
   marketStatusRequest,
+  diagnosticsExportRequestSchema,
   osdToggleRequest,
   presetIdRequest,
   sessionIdRequest,
@@ -49,6 +54,7 @@ import {
   type PresetSummary,
 } from '../shared/ipc';
 import type { InstallResult, MarketStatus } from '../shared/market/types';
+import type { PublishCandidate, PublishConfig, PublishResult } from '../shared/market/publish';
 import type { HealthFlushResult, HealthStatus } from '../shared/health/types';
 import type { ShaderCachePruneResult, ShaderCacheStatus } from '../shared/shader-cache';
 import { describeActions } from '../shared/game/describe';
@@ -74,8 +80,14 @@ import { buildServiceDependencyGraph, type ServiceDependencyAction, type Service
 import type { AppInfo, MemorySnapshot } from '../shared/session';
 import type { PostApplyStatus } from '../shared/post-apply';
 import { initialUpdaterStatus, type UpdaterStatus } from '../shared/updater';
+import type {
+  DiagnosticsExportRequest,
+  DiagnosticsExportResult,
+  DiagnosticsStatus,
+} from '../shared/diagnostics/types';
 import type { AppState } from './app-state-types';
 import type { UpdaterService } from './updater';
+import { diagnosticBundleName, type DiagnosticsService } from './diagnostics/reports';
 import { runPreflight } from './engine/preflight';
 import { probeSystemRestore } from './platform/restore-point';
 import { readServiceRegistry } from './platform/service-registry';
@@ -124,6 +136,7 @@ export function registerIpcHandlers(
   getWindow: () => BrowserWindow | null,
   overlay?: OverlayController,
   updater?: UpdaterService,
+  diagnostics?: DiagnosticsService,
 ): void {
   // Push game mode transitions to the window as they happen. The overlay is a second
   // listener here rather than owning a competing `setOnChange` registration.
@@ -203,6 +216,48 @@ export function registerIpcHandlers(
   handle<UpdaterStatus>(IPC_CHANNELS.updateStatus, async () =>
     updater?.status() ?? unavailableUpdaterStatus(),
   );
+
+  const unavailableDiagnostics = (): DiagnosticsStatus => ({
+    crashDir: '',
+    reportCount: 0,
+    dumpCount: 0,
+    totalDumpBytes: 0,
+    reports: [],
+    message: 'Local crash diagnostics are unavailable in this build.',
+  });
+
+  handle<DiagnosticsStatus>(IPC_CHANNELS.diagnosticsStatus, async () =>
+    diagnostics?.status() ?? unavailableDiagnostics(),
+  );
+
+  handle<DiagnosticsExportResult>(IPC_CHANNELS.diagnosticsExport, async (raw) => {
+    if (diagnostics === undefined) {
+      throw new TuneSmithError('unavailable', 'Local crash diagnostics are unavailable in this build.');
+    }
+    const request = parsePayload<DiagnosticsExportRequest>(diagnosticsExportRequestSchema, raw);
+    const parent = getWindow();
+    const options: SaveDialogOptions = {
+      title: 'Export TuneSmith diagnostics',
+      defaultPath: path.join(app.getPath('downloads'), diagnosticBundleName()),
+      filters: [{ name: 'ZIP archive', extensions: ['zip'] }],
+    };
+    const picked =
+      parent === null || parent.isDestroyed()
+        ? await dialog.showSaveDialog(options)
+        : await dialog.showSaveDialog(parent, options);
+    if (picked.canceled || picked.filePath === undefined) {
+      return { saved: false, path: null, fileCount: 0, bytes: 0, message: 'Export cancelled.' };
+    }
+    return diagnostics.exportBundle(request, picked.filePath);
+  });
+
+  handle<void>(IPC_CHANNELS.diagnosticsOpenFolder, async () => {
+    if (diagnostics === undefined) {
+      throw new TuneSmithError('unavailable', 'Local crash diagnostics are unavailable in this build.');
+    }
+    const error = await shell.openPath(diagnostics.crashDir);
+    if (error.length > 0) throw new TuneSmithError('unavailable', `Could not open the crash folder: ${error}`);
+  });
 
   handle<UpdaterStatus>(IPC_CHANNELS.updateCheck, async () => {
     if (updater === undefined) return unavailableUpdaterStatus();
@@ -348,6 +403,38 @@ export function registerIpcHandlers(
   handle<MarketStatus>(IPC_CHANNELS.marketTelemetryConsent, async (raw) => {
     const { consent } = parsePayload<{ consent: boolean }>(telemetryConsentRequest, raw);
     return state.market.setConsent(consent);
+  });
+
+  handle<PublishConfig>(IPC_CHANNELS.marketPublishConfig, async () => state.marketPublisher.config());
+
+  handle<PublishCandidate | null>(IPC_CHANNELS.marketPickPublishPreset, async () => {
+    const parent = getWindow();
+    const options: OpenDialogOptions = {
+      title: 'Choose a preset to publish',
+      properties: ['openFile'],
+      filters: [{ name: 'TuneSmith preset', extensions: ['json'] }],
+    };
+    const picked =
+      parent === null || parent.isDestroyed()
+        ? await dialog.showOpenDialog(options)
+        : await dialog.showOpenDialog(parent, options);
+    if (picked.canceled) return null;
+    const selected = picked.filePaths[0];
+    return selected === undefined ? null : state.marketPublisher.prepare(selected);
+  });
+
+  handle<PublishResult>(IPC_CHANNELS.marketPublish, async (raw) => {
+    const request = parsePayload<{
+      token: string;
+      virusTotalKey?: string;
+      githubToken?: string;
+    }>(marketPublishRequest, raw);
+    return state.marketPublisher.publish(request);
+  });
+
+  handle<void>(IPC_CHANNELS.marketOpenPublishLink, async (raw) => {
+    const { url } = parsePayload<{ url: string }>(marketOpenPublishLinkRequest, raw);
+    await shell.openExternal(url);
   });
 
   handle(IPC_CHANNELS.safetyPreflight, async () =>

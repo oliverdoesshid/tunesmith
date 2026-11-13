@@ -1,6 +1,8 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { OsdState } from '../shared/game/osd';
+import { FloatRingBuffer } from '../shared/telemetry/ring-buffer';
+import { TelemetryGraph } from './components/TelemetryGraph';
 import './overlay.css';
 
 const MOCK_STATE: OsdState = {
@@ -39,6 +41,21 @@ function temperature(value: number | null): string {
 }
 
 function Osd({ state, preview }: { state: OsdState; preview: boolean }): ReactNode {
+  // Keep the last four minutes at the sampler's one-second cadence. The renderer is
+  // independent of that cadence: it redraws at requestAnimationFrame speed and accepts
+  // 100 Hz sources unchanged (the dashboard's live source uses this same buffer type).
+  const frameHistory = useRef(new FloatRingBuffer(240));
+  const lastSampleAt = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastSampleAt.current === state.updatedAt) return;
+    lastSampleAt.current = state.updatedAt;
+    frameHistory.current.push(state.frameTimeMs ?? Number.NaN);
+  }, [state.updatedAt, state.frameTimeMs]);
+  const series = useMemo(
+    () => [{ label: 'FRAME', color: '#d4ff5f', buffer: frameHistory.current }],
+    [],
+  );
+
   return (
     <div className="osd" aria-hidden="true">
       <div className="osd-head">
@@ -71,6 +88,8 @@ function Osd({ state, preview }: { state: OsdState; preview: boolean }): ReactNo
           <span className="osd-label">MS</span>
         </div>
       </div>
+
+      <TelemetryGraph series={series} height={50} unit="ms" className="osd-graph" />
 
       <div className="osd-foot">
         <span>

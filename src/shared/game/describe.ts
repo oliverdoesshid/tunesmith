@@ -1,4 +1,5 @@
 /** Human-readable labels for a game profile's actions, used by the UI and logs. */
+import { POWER_PLANS } from '../power';
 import type { GameProfile } from './types';
 
 const AFFINITY_LABELS: Record<string, string> = {
@@ -31,6 +32,9 @@ export function describeActions(profile: GameProfile): string[] {
   }
   if (actions.flushStandbyMemory === true) labels.push('Memory: purge standby list');
   if (actions.timerHold === true) labels.push('Timer: hold 0.5 ms resolution while playing');
+  if (actions.powerPlan !== undefined) {
+    labels.push(`Power: ${POWER_PLANS[actions.powerPlan].label} plan for the session (restored on exit)`);
+  }
 
   const rules = actions.backgroundRules ?? [];
   if (rules.length > 0) {

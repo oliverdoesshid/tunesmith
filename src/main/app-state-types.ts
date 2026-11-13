@@ -5,6 +5,7 @@ import type { JournalStore } from './engine/journal';
 import type { SessionLock } from './engine/lock';
 import type { PresetRepository } from './engine/preset-repository';
 import type { MarketplaceService } from './market/service';
+import type { MarketPublisher } from './market/publish';
 import type { GameLibraryService } from './platform/game/libraries';
 import type { ArtworkResolver } from './services/artworkResolver';
 import type { SteamGridDbService } from './services/steamgriddb';
@@ -27,6 +28,7 @@ export interface AppState {
   health: HealthWatchdog;
   shaderCache: ShaderCacheService;
   market: MarketplaceService;
+  marketPublisher: MarketPublisher;
   presetsDir: string;
   gameProfilesDir: string;
   sessionsDir: string;

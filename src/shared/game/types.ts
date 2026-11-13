@@ -5,6 +5,7 @@
  * specific game is in the foreground, and what to undo when it leaves. Every field
  * is data; the engine maps it to a fixed, typed operation.
  */
+import type { PowerPlanId } from '../power';
 import type { RiskLevel } from '../types';
 
 /** 0-based logical processor indices, as reported by the OS. */
@@ -63,6 +64,11 @@ export interface GameProfileActions {
    * stopped on restore. Raises idle power draw; that is the documented trade.
    */
   timerHold?: boolean;
+  /**
+   * Switch the active Windows power plan for this session and restore the previous
+   * plan on exit or crash recovery. The vocabulary is fixed; profiles never supply a GUID.
+   */
+  powerPlan?: PowerPlanId;
   backgroundRules?: BackgroundRule[];
 }
 
@@ -338,7 +344,8 @@ export type AdjustmentKind =
   | 'background-priority'
   | 'background-suspend'
   | 'background-eco'
-  | 'timer-resolution';
+  | 'timer-resolution'
+  | 'power-plan';
 
 export interface AppliedAdjustment {
   kind: AdjustmentKind;

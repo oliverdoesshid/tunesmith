@@ -536,6 +536,32 @@ is open; quitting the app ends the window, and the pre-existing applied session 
 available for manual rollback. The watchdog is an additional safety layer, not a claim that
 an arbitrary aggressive preset can never destabilise a machine.
 
+### 4.13 Session power plan (`powerPlan`)
+
+A profile can ask Windows to switch to a named power plan for the duration of its session:
+
+```json
+"actions": {
+  "powerPlan": "high-performance"
+}
+```
+
+The vocabulary is the same fixed list used by tuning presets (`balanced`,
+`high-performance`, `power-saver`); a game profile cannot supply a raw GUID. The engine:
+
+1. reads the active plan through `powercfg -getactivescheme`;
+2. writes the previous GUID into the session file **before** switching;
+3. switches with `powercfg -setactive`; and
+4. restores the exact previous plan on exit, on thermal-guard release, when game mode is
+   disabled, and during crash recovery.
+
+If the requested plan is already active, the engine records `Already active` and writes no
+snapshot. If `powercfg` refuses the switch, the session records a failed adjustment and the
+rest of the profile continues. The trade is deliberate: a high-performance plan keeps clocks
+and PCIe links up while the game runs, and can raise heat and idle power during the session;
+the prior plan is restored as soon as the session ends. This is session-scoped, not a
+permanent change to the machine's default plan.
+
 ## 5. Crash and exit safety
 
 The failure that matters is "the app died while Chrome was suspended". Three mechanisms

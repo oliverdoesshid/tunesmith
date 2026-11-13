@@ -27,12 +27,15 @@ import { PlanDialog } from './components/PlanDialog';
 import { InstalledPresets } from './components/InstalledPresets';
 import { PresetBrowser } from './components/PresetBrowser';
 import { SessionPanel, summarizeReports } from './components/SessionPanel';
+import { SettingsDialog } from './components/SettingsDialog';
+import { DiagnosticsDialog } from './components/DiagnosticsDialog';
 import { ShaderCachePanel } from './components/ShaderCachePanel';
 import { SystemHealthPanel } from './components/SystemHealthPanel';
 import { errorMessage, getBridge, isMockBridge } from './lib/bridge';
 import { PostApplyBanner } from './components/PostApplyBanner';
 import {
   DEFAULT_FEATURES,
+  FEATURE_DEFINITIONS,
   loadFeatureVisibility,
   saveFeatureVisibility,
   type FeatureKey,
@@ -87,6 +90,8 @@ export default function App(): ReactNode {
     serviceGraphError: string | null;
   } | null>(null);
   const [progress, setProgress] = useState<EngineProgress | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [features, setFeatures] = useState(() => loadFeatureVisibility());
 
   const hasRail = features.hardware || features.health;
@@ -547,13 +552,37 @@ export default function App(): ReactNode {
     }
   }, [bridge, reload]);
 
-  const toggleFeature = useCallback((key: FeatureKey) => {
-    setFeatures((current) => ({ ...current, [key]: !current[key] }));
-  }, []);
+  const setFeatureEnabled = useCallback(
+    (key: FeatureKey, enabled: boolean) => {
+      setFeatures((current) => ({ ...current, [key]: enabled }));
+      // Turning off game mode should also disarm the watcher; an active session is left
+      // intact so its journaled changes can still be restored from the panel or HUD.
+      if (key === 'gameMode' && !enabled) {
+        void bridge.game
+          .setWatching(false)
+          .then(setGame)
+          .catch((err: unknown) => setToast({ kind: 'error', text: errorMessage(err) }));
+      }
+    },
+    [bridge],
+  );
 
-  const showAllFeatures = useCallback(() => {
-    setFeatures({ ...DEFAULT_FEATURES });
-  }, []);
+  const setAllFeatures = useCallback(
+    (enabled: boolean) => {
+      setFeatures(() => {
+        const next = { ...DEFAULT_FEATURES };
+        for (const feature of FEATURE_DEFINITIONS) next[feature.key] = enabled;
+        return next;
+      });
+      if (!enabled) {
+        void bridge.game
+          .setWatching(false)
+          .then(setGame)
+          .catch((err: unknown) => setToast({ kind: 'error', text: errorMessage(err) }));
+      }
+    },
+    [bridge],
+  );
 
   return (
     <div className="app">
@@ -563,8 +592,7 @@ export default function App(): ReactNode {
         isMock={mock}
         busy={busy}
         features={features}
-        onToggleFeature={toggleFeature}
-        onShowAllFeatures={showAllFeatures}
+        onOpenSettings={() => setSettingsOpen(true)}
         onRefresh={() => void refreshAll()}
       />
 
@@ -619,7 +647,7 @@ export default function App(): ReactNode {
 
         <div className="content">
           {!hasContent ? (
-            <EmptyWorkspace onShowAll={showAllFeatures} />
+            <EmptyWorkspace onShowAll={() => setAllFeatures(true)} />
           ) : loading ? (
             <section className="panel loading-panel">
               <span className="panel-kicker">SCANNING</span>
@@ -714,6 +742,28 @@ export default function App(): ReactNode {
           )}
         <span className="muted small">{info?.sessionsDir ?? ''}</span>
       </footer>
+
+      {settingsOpen && (
+        <SettingsDialog
+          features={features}
+          game={game}
+          osd={osd}
+          busy={busy}
+          onClose={() => setSettingsOpen(false)}
+          onSetFeature={setFeatureEnabled}
+          onSetAllFeatures={setAllFeatures}
+          onToggleGameMode={(enabled) => void toggleGameMode(enabled)}
+          onToggleCryoFreeze={(enabled) => void toggleCryoFreeze(enabled)}
+          onToggleInterruptAffinity={(enabled) => void toggleInterruptAffinity(enabled)}
+          onToggleOsd={(enabled) => void toggleOsd(enabled)}
+          onOpenDiagnostics={() => {
+            setSettingsOpen(false);
+            setDiagnosticsOpen(true);
+          }}
+        />
+      )}
+
+      {diagnosticsOpen && <DiagnosticsDialog onClose={() => setDiagnosticsOpen(false)} />}
 
       {dialog !== null && (
         <PlanDialog
