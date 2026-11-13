@@ -97,7 +97,7 @@ the number is never a black box.
 Recorded locally whether or not consent is enabled (it powers the local crash numbers):
 
 ```json
-{ "at": "2026-11-10T12:00:00.000Z", "presetId": "example", "presetVersion": "1.2.0", "appVersion": "0.2.0", "kind": "apply-ok" }
+{ "at": "2026-11-10T12:00:00.000Z", "presetId": "example", "presetVersion": "1.2.0", "appVersion": "0.2.1", "kind": "apply-ok" }
 ```
 
 Kinds: `apply-ok`, `apply-failed`, `session-interrupted`, `session-recovered`. There is no

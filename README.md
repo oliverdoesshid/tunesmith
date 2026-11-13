@@ -40,7 +40,7 @@ detected components. It is the contract between that machine and a preset, and
 
 ## Status
 
-**v0.2.0 release preview.** The safety-critical core, signed preset marketplace, game profiles
+**v0.2.1 release preview.** The safety-critical core, signed preset marketplace, game profiles
 and desktop workbench are implemented and tested. This build is intended for supervised testing
 on Windows 10/11 rather than unattended consumer deployment: the installer is unsigned, the
 auto-update feed and installer handoff still need a supervised release pass, there is no settings
@@ -48,7 +48,14 @@ screen, and a stock build ships without a marketplace curator key. System mutati
 journaled and reversible, but live apply/rollback and game sessions should be tested on a
 disposable account or VM first.
 
-### What's new in v0.2.0
+### What's new in v0.2.1
+
+- Fixed the blank packaged window caused by production tree-shaking removing React scheduler
+  side effects. The built renderer now mounts the workbench in both Chromium and Electron.
+- The preset marketplace is published at
+  [oliverdoesshid.github.io/tunesmith/market](https://oliverdoesshid.github.io/tunesmith/market/).
+
+### v0.2.0 highlights
 
 - Packaged builds now check GitHub Releases through `electron-updater`, show download progress
   in the footer, and install only after an explicit request. Version tags drive the NSIS release
@@ -109,6 +116,8 @@ compatibility but is not used by the grid.
 
 ### Static preset market
 
+The public marketplace is
+[oliverdoesshid.github.io/tunesmith/market](https://oliverdoesshid.github.io/tunesmith/market/).
 `market/` is a standalone, dependency-free Steam-dark storefront for GitHub Pages.
 `npm run market:index` rebuilds `market/index.json` from `presets/community/`, validates every
 preset against the schema, verifies its SHA-256 and pinned Ed25519 `.sig`, and emits raw GitHub

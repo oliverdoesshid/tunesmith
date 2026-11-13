@@ -1,7 +1,7 @@
 {
   "name": "tunesmith",
   "productName": "TuneSmith",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Windows performance tuning driven by community presets, with a closed action vocabulary and mandatory rollback.",
   "author": "TuneSmith Contributors",

@@ -33,14 +33,6 @@ export default defineConfig({
     reportCompressedSize: false,
     modulePreload: { polyfill: false },
     rolldownOptions: {
-      treeshake: {
-        // The only side-effect-only imports are the two stylesheets; preserve those
-        // and let unused JavaScript modules/exports be removed aggressively.
-        moduleSideEffects: [{ test: /\.css(?:\?|$)/, sideEffects: true }],
-        propertyReadSideEffects: false,
-        propertyWriteSideEffects: false,
-        unknownGlobalSideEffects: false,
-      },
       input: {
         app: path.join(rootDir, 'index.html'),
         overlay: path.join(rootDir, 'overlay.html'),

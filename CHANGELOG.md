@@ -3,6 +3,20 @@
 All notable changes to TuneSmith are recorded here. Releases follow the tags published on
 [GitHub Releases](https://github.com/oliverdoesshid/tunesmith/releases).
 
+## [0.2.1] - 2026-11-13
+
+### Fixed
+
+- Fixed the blank packaged window. Vite's custom aggressive tree-shaking removed React scheduler
+  side effects, so the built renderer attached a React root but never committed the workbench.
+  The unsafe tree-shaking overrides were removed and the packaged renderer was verified in
+  Electron.
+
+### Added
+
+- Published the preset marketplace on GitHub Pages at
+  https://oliverdoesshid.github.io/tunesmith/market/.
+
 ## [0.2.0] - 2026-11-12
 
 ### Added
